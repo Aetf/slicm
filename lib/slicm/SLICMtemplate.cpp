@@ -139,14 +139,6 @@ namespace {
     /// set.
     void deleteAnalysisValue(Value *V, Loop *L);
 
-    /// SinkRegion - Walk the specified region of the CFG (defined by all blocks
-    /// dominated by the specified block, and that are in the current loop) in
-    /// reverse depth first order w.r.t the DominatorTree.  This allows us to
-    /// visit uses before definitions, allowing us to sink a loop body in one
-    /// pass without iteration.
-    ///
-    void SinkRegion(DomTreeNode *N);
-
     /// HoistRegion - Walk the specified region of the CFG (defined by all
     /// blocks dominated by the specified block, and that are in the current
     /// loop) in depth first order w.r.t the DominatorTree.  This allows us to
@@ -162,12 +154,6 @@ namespace {
       assert(CurLoop->contains(BB) && "Only valid if BB is IN the loop");
       return LI->getLoopFor(BB) != CurLoop;
     }
-
-    /// sink - When an instruction is found to only be used outside of the loop,
-    /// this function moves it to the exit blocks and patches up SSA form as
-    /// needed.
-    ///
-    void sink(Instruction &I);
 
     /// hoist - When an instruction is found to only use loop invariant operands
     /// that is safe to hoist, this instruction is called to do the dirty work.
@@ -285,8 +271,6 @@ bool SLICM::runOnLoop(Loop *L, LPPassManager &LPM) {
   // us to sink instructions in one pass, without iteration.  After sinking
   // instructions, we perform another pass to hoist them out of the loop.
   //
-  if (L->hasDedicatedExits())
-    SinkRegion(DT->getNode(L->getHeader()));
   if (Preheader)
     HoistRegion(DT->getNode(L->getHeader()));
 
@@ -313,54 +297,6 @@ bool SLICM::runOnLoop(Loop *L, LPPassManager &LPM) {
   else
     delete CurAST;
   return Changed;
-}
-
-/// SinkRegion - Walk the specified region of the CFG (defined by all blocks
-/// dominated by the specified block, and that are in the current loop) in
-/// reverse depth first order w.r.t the DominatorTree.  This allows us to visit
-/// uses before definitions, allowing us to sink a loop body in one pass without
-/// iteration.
-///
-void SLICM::SinkRegion(DomTreeNode *N) {
-  assert(N != 0 && "Null dominator tree node?");
-  BasicBlock *BB = N->getBlock();
-
-  // If this subregion is not in the top level loop at all, exit.
-  if (!CurLoop->contains(BB)) return;
-
-  // We are processing blocks in reverse dfo, so process children first.
-  const std::vector<DomTreeNode*> &Children = N->getChildren();
-  for (unsigned i = 0, e = Children.size(); i != e; ++i)
-    SinkRegion(Children[i]);
-
-  // Only need to process the contents of this block if it is not part of a
-  // subloop (which would already have been processed).
-  if (inSubLoop(BB)) return;
-
-  for (BasicBlock::iterator II = BB->end(); II != BB->begin(); ) {
-    Instruction &I = *--II;
-
-    // If the instruction is dead, we would try to sink it because it isn't used
-    // in the loop, instead, just delete it.
-    if (isInstructionTriviallyDead(&I, TLI)) {
-      DEBUG(dbgs() << "SLICM deleting dead inst: " << I << '\n');
-      ++II;
-      CurAST->deleteValue(&I);
-      I.eraseFromParent();
-      Changed = true;
-      continue;
-    }
-
-    // Check to see if we can sink this instruction to the exit blocks
-    // of the loop.  We can do this if the all users of the instruction are
-    // outside of the loop.  In this case, it doesn't even matter if the
-    // operands of the instruction are loop invariant.
-    //
-    if (isNotUsedInLoop(I) && canSinkOrHoistInst(I)) {
-      ++II;
-      sink(I);
-    }
-  }
 }
 
 /// HoistRegion - Walk the specified region of the CFG (defined by all blocks
@@ -488,130 +424,6 @@ bool SLICM::isNotUsedInLoop(Instruction &I) {
     }
   }
   return true;
-}
-
-
-/// sink - When an instruction is found to only be used outside of the loop,
-/// this function moves it to the exit blocks and patches up SSA form as needed.
-/// This method is guaranteed to remove the original instruction from its
-/// position, and may either delete it or move it to outside of the loop.
-///
-void SLICM::sink(Instruction &I) {
-  DEBUG(dbgs() << "SLICM sinking instruction: " << I << "\n");
-
-  SmallVector<BasicBlock*, 8> ExitBlocks;
-  CurLoop->getUniqueExitBlocks(ExitBlocks);
-
-  if (isa<LoadInst>(I)) ++NumMovedLoads;
-  else if (isa<CallInst>(I)) ++NumMovedCalls;
-  ++NumSunk;
-  Changed = true;
-
-  // The case where there is only a single exit node of this loop is common
-  // enough that we handle it as a special (more efficient) case.  It is more
-  // efficient to handle because there are no PHI nodes that need to be placed.
-  if (ExitBlocks.size() == 1) {
-    if (!DT->dominates(I.getParent(), ExitBlocks[0])) {
-      // Instruction is not used, just delete it.
-      CurAST->deleteValue(&I);
-      // If I has users in unreachable blocks, eliminate.
-      // If I is not void type then replaceAllUsesWith undef.
-      // This allows ValueHandlers and custom metadata to adjust itself.
-      if (!I.use_empty())
-        I.replaceAllUsesWith(UndefValue::get(I.getType()));
-      I.eraseFromParent();
-    } else {
-      // Move the instruction to the start of the exit block, after any PHI
-      // nodes in it.
-      I.moveBefore(ExitBlocks[0]->getFirstInsertionPt());
-
-      // This instruction is no longer in the AST for the current loop, because
-      // we just sunk it out of the loop.  If we just sunk it into an outer
-      // loop, we will rediscover the operation when we process it.
-      CurAST->deleteValue(&I);
-    }
-    return;
-  }
-
-  if (ExitBlocks.empty()) {
-    // The instruction is actually dead if there ARE NO exit blocks.
-    CurAST->deleteValue(&I);
-    // If I has users in unreachable blocks, eliminate.
-    // If I is not void type then replaceAllUsesWith undef.
-    // This allows ValueHandlers and custom metadata to adjust itself.
-    if (!I.use_empty())
-      I.replaceAllUsesWith(UndefValue::get(I.getType()));
-    I.eraseFromParent();
-    return;
-  }
-
-  // Otherwise, if we have multiple exits, use the SSAUpdater to do all of the
-  // hard work of inserting PHI nodes as necessary.
-  SmallVector<PHINode*, 8> NewPHIs;
-  SSAUpdater SSA(&NewPHIs);
-
-  if (!I.use_empty())
-    SSA.Initialize(I.getType(), I.getName());
-
-  // Insert a copy of the instruction in each exit block of the loop that is
-  // dominated by the instruction.  Each exit block is known to only be in the
-  // ExitBlocks list once.
-  BasicBlock *InstOrigBB = I.getParent();
-  unsigned NumInserted = 0;
-
-  for (unsigned i = 0, e = ExitBlocks.size(); i != e; ++i) {
-    BasicBlock *ExitBlock = ExitBlocks[i];
-
-    if (!DT->dominates(InstOrigBB, ExitBlock))
-      continue;
-
-    // Insert the code after the last PHI node.
-    BasicBlock::iterator InsertPt = ExitBlock->getFirstInsertionPt();
-
-    // If this is the first exit block processed, just move the original
-    // instruction, otherwise clone the original instruction and insert
-    // the copy.
-    Instruction *New;
-    if (NumInserted++ == 0) {
-      I.moveBefore(InsertPt);
-      New = &I;
-    } else {
-      New = I.clone();
-      if (!I.getName().empty())
-        New->setName(I.getName()+".le");
-      ExitBlock->getInstList().insert(InsertPt, New);
-    }
-
-    // Now that we have inserted the instruction, inform SSAUpdater.
-    if (!I.use_empty())
-      SSA.AddAvailableValue(ExitBlock, New);
-  }
-
-  // If the instruction doesn't dominate any exit blocks, it must be dead.
-  if (NumInserted == 0) {
-    CurAST->deleteValue(&I);
-    if (!I.use_empty())
-      I.replaceAllUsesWith(UndefValue::get(I.getType()));
-    I.eraseFromParent();
-    return;
-  }
-
-  // Next, rewrite uses of the instruction, inserting PHI nodes as needed.
-  for (Value::use_iterator UI = I.use_begin(), UE = I.use_end(); UI != UE; ) {
-    // Grab the use before incrementing the iterator.
-    Use &U = UI.getUse();
-    // Increment the iterator before removing the use from the list.
-    ++UI;
-    SSA.RewriteUseAfterInsertions(U);
-  }
-
-  // Update CurAST for NewPHIs if I had pointer type.
-  if (I.getType()->isPointerTy())
-    for (unsigned i = 0, e = NewPHIs.size(); i != e; ++i)
-      CurAST->copyValue(&I, NewPHIs[i]);
-
-  // Finally, remove the instruction from CurAST.  It is no longer in the loop.
-  CurAST->deleteValue(&I);
 }
 
 /// hoist - When an instruction is found to only use loop invariant operands

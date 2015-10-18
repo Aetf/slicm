@@ -12,7 +12,7 @@ TOOLNAME=Slicm
 # List libraries that we'll need
 # We use LIBS because sample is a dynamic library.
 #
-USEDLIBS = slicm.a
+#USEDLIBS = slicm
 
 #
 # Include Makefile.common so we know what to do.
