@@ -4,8 +4,8 @@ dnl **************************************************************************
 AC_INIT([[[SLICM]]],[[[0.01]]],[aetf@unlimitedcodeworks.xyz])
 
 dnl Identify where LLVM source tree is
-LLVM_SRC_ROOT="/home/aetf/develop/vcs/llvm33/"
-LLVM_OBJ_ROOT="/opt/llvm33/"
+LLVM_SRC_ROOT="/home/aetf/develop/vcs/llvm33"
+LLVM_OBJ_ROOT="/opt/llvm33"
 
 dnl Find absolute paths to LLVM source and object trees
 LLVM_ABS_SRC_ROOT="`cd $srcdir ; cd $LLVM_SRC_ROOT ; pwd`"
@@ -1491,10 +1491,12 @@ AC_CONFIG_FILES(Makefile.llvm.config)
 dnl Configure project makefiles
 dnl List every Makefile that exists within your source tree
 AC_CONFIG_MAKEFILE(Makefile)
-AC_CONFIG_MAKEFILE(lib/Makefile)
-AC_CONFIG_MAKEFILE(lib/slicm/Makefile)
+AC_CONFIG_MAKEFILE(passes/Makefile)
+AC_CONFIG_MAKEFILE(passes/slicm/Makefile)
 AC_CONFIG_MAKEFILE(tools/Makefile)
 AC_CONFIG_MAKEFILE(tools/slicm/Makefile)
+AC_CONFIG_MAKEFILE(tools/lamp-profiler/Makefile)
+AC_CONFIG_MAKEFILE(tools/utils/Makefile)
 
 dnl This must be last
 AC_OUTPUT

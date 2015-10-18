@@ -2522,8 +2522,8 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
 
-LLVM_SRC_ROOT="/home/aetf/develop/vcs/llvm33/"
-LLVM_OBJ_ROOT="/opt/llvm33/"
+LLVM_SRC_ROOT="/home/aetf/develop/vcs/llvm33"
+LLVM_OBJ_ROOT="/opt/llvm33"
 
 LLVM_ABS_SRC_ROOT="`cd $srcdir ; cd $LLVM_SRC_ROOT ; pwd`"
 LLVM_ABS_OBJ_ROOT="`cd $LLVM_OBJ_ROOT ; pwd`"
@@ -12886,16 +12886,22 @@ ac_config_files="$ac_config_files Makefile.llvm.config"
 ac_config_commands="$ac_config_commands Makefile"
 
 
-ac_config_commands="$ac_config_commands lib/Makefile"
+ac_config_commands="$ac_config_commands passes/Makefile"
 
 
-ac_config_commands="$ac_config_commands lib/slicm/Makefile"
+ac_config_commands="$ac_config_commands passes/slicm/Makefile"
 
 
 ac_config_commands="$ac_config_commands tools/Makefile"
 
 
 ac_config_commands="$ac_config_commands tools/slicm/Makefile"
+
+
+ac_config_commands="$ac_config_commands tools/lamp-profiler/Makefile"
+
+
+ac_config_commands="$ac_config_commands tools/utils/Makefile"
 
 
 
@@ -13627,10 +13633,12 @@ do
     "Makefile.common") CONFIG_FILES="$CONFIG_FILES Makefile.common" ;;
     "Makefile.llvm.config") CONFIG_FILES="$CONFIG_FILES Makefile.llvm.config" ;;
     "Makefile") CONFIG_COMMANDS="$CONFIG_COMMANDS Makefile" ;;
-    "lib/Makefile") CONFIG_COMMANDS="$CONFIG_COMMANDS lib/Makefile" ;;
-    "lib/slicm/Makefile") CONFIG_COMMANDS="$CONFIG_COMMANDS lib/slicm/Makefile" ;;
+    "passes/Makefile") CONFIG_COMMANDS="$CONFIG_COMMANDS passes/Makefile" ;;
+    "passes/slicm/Makefile") CONFIG_COMMANDS="$CONFIG_COMMANDS passes/slicm/Makefile" ;;
     "tools/Makefile") CONFIG_COMMANDS="$CONFIG_COMMANDS tools/Makefile" ;;
     "tools/slicm/Makefile") CONFIG_COMMANDS="$CONFIG_COMMANDS tools/slicm/Makefile" ;;
+    "tools/lamp-profiler/Makefile") CONFIG_COMMANDS="$CONFIG_COMMANDS tools/lamp-profiler/Makefile" ;;
+    "tools/utils/Makefile") CONFIG_COMMANDS="$CONFIG_COMMANDS tools/utils/Makefile" ;;
 
   *) as_fn_error $? "invalid argument: \`$ac_config_target'" "$LINENO" 5;;
   esac
@@ -14056,14 +14064,18 @@ $as_echo "$as_me: executing $ac_file commands" >&6;}
   case $ac_file$ac_mode in
     "Makefile":C) ${llvm_src}/autoconf/mkinstalldirs `dirname Makefile`
    ${SHELL} ${llvm_src}/autoconf/install-sh -m 0644 -c ${srcdir}/Makefile Makefile ;;
-    "lib/Makefile":C) ${llvm_src}/autoconf/mkinstalldirs `dirname lib/Makefile`
-   ${SHELL} ${llvm_src}/autoconf/install-sh -m 0644 -c ${srcdir}/lib/Makefile lib/Makefile ;;
-    "lib/slicm/Makefile":C) ${llvm_src}/autoconf/mkinstalldirs `dirname lib/slicm/Makefile`
-   ${SHELL} ${llvm_src}/autoconf/install-sh -m 0644 -c ${srcdir}/lib/slicm/Makefile lib/slicm/Makefile ;;
+    "passes/Makefile":C) ${llvm_src}/autoconf/mkinstalldirs `dirname passes/Makefile`
+   ${SHELL} ${llvm_src}/autoconf/install-sh -m 0644 -c ${srcdir}/passes/Makefile passes/Makefile ;;
+    "passes/slicm/Makefile":C) ${llvm_src}/autoconf/mkinstalldirs `dirname passes/slicm/Makefile`
+   ${SHELL} ${llvm_src}/autoconf/install-sh -m 0644 -c ${srcdir}/passes/slicm/Makefile passes/slicm/Makefile ;;
     "tools/Makefile":C) ${llvm_src}/autoconf/mkinstalldirs `dirname tools/Makefile`
    ${SHELL} ${llvm_src}/autoconf/install-sh -m 0644 -c ${srcdir}/tools/Makefile tools/Makefile ;;
     "tools/slicm/Makefile":C) ${llvm_src}/autoconf/mkinstalldirs `dirname tools/slicm/Makefile`
    ${SHELL} ${llvm_src}/autoconf/install-sh -m 0644 -c ${srcdir}/tools/slicm/Makefile tools/slicm/Makefile ;;
+    "tools/lamp-profiler/Makefile":C) ${llvm_src}/autoconf/mkinstalldirs `dirname tools/lamp-profiler/Makefile`
+   ${SHELL} ${llvm_src}/autoconf/install-sh -m 0644 -c ${srcdir}/tools/lamp-profiler/Makefile tools/lamp-profiler/Makefile ;;
+    "tools/utils/Makefile":C) ${llvm_src}/autoconf/mkinstalldirs `dirname tools/utils/Makefile`
+   ${SHELL} ${llvm_src}/autoconf/install-sh -m 0644 -c ${srcdir}/tools/utils/Makefile tools/utils/Makefile ;;
 
   esac
 done # for ac_tag
