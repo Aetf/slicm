@@ -4,8 +4,8 @@ dnl **************************************************************************
 AC_INIT([[[SLICM]]],[[[0.01]]],[aetf@unlimitedcodeworks.xyz])
 
 dnl Identify where LLVM source tree is
-LLVM_SRC_ROOT="/home/aetf/develop/vcs/llvm33"
-LLVM_OBJ_ROOT="/opt/llvm33"
+LLVM_SRC_ROOT="/home/aetf/develop/vcs/llvm33/"
+LLVM_OBJ_ROOT="/opt/llvm33/"
 
 dnl Find absolute paths to LLVM source and object trees
 LLVM_ABS_SRC_ROOT="`cd $srcdir ; cd $LLVM_SRC_ROOT ; pwd`"
