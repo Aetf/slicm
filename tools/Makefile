@@ -6,6 +6,6 @@ LEVEL=..
 #
 # List all of the subdirectories that we will compile.
 #
-DIRS=slicm utils lamp-profiler
+PARALLEL_DIRS=slicm utils lamp-profiler
 
 include $(LEVEL)/Makefile.common
