@@ -1,4 +1,10 @@
+# Kdevelop 4 project files
 .kdev4/*
 *.kdev4
 
+# Autoconf cache
+autoconf/aclocal.m4
+autoconf/autom4te.cache/*
+
+# Build dir
 build/*
