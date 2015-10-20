@@ -8,3 +8,7 @@ autoconf/autom4te.cache/*
 
 # Build dir
 build/*
+
+# test dir
+tests/*/*.bc
+tests/*/*.ll
