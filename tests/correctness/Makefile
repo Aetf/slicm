@@ -1,15 +1,27 @@
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 LEVEL := "../.."
-PASSLIB = $(THIS_DIR)$(LEVEL)/build/Release+Asserts/lib/slicm.so
+PASSLIB = $(THIS_DIR)$(LEVEL)/build/Debug+Asserts/lib/slicm.so
 
 RESULTDIR = $(THIS_DIR)results
 OUTPUTDIR = $(THIS_DIR)output
 
 CASES = case1 case2 case3 case4
 
+# Tools we use
+LLVMHOME = /opt/llvm33
+opt = $(LLVMHOME)/bin/opt
+clang = $(LLVMHOME)/bin/clang
+llvm-dis = $(LLVMHOME)/bin/llvm-dis
+
 all : $(CASES)
 
 case1 : correct1.bc
+
+case2 : correct2.bc
+
+case3 : correct3.bc
+
+case4 : correct4.bc
 
 cfg1 : correct1.bc
 	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
@@ -21,13 +33,54 @@ slicmcfg1 : correct1.slicm.bc
 	@sleep 1s
 	@rm $($@_TMP)
 
-.PHONY : all $(CASES) cfg1
+cfg2 : correct2.bc
+	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
+	@sleep 1s
+	@rm $($@_TMP)
+
+slicmcfg2 : correct2.slicm.bc
+	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
+	@sleep 1s
+	@rm $($@_TMP)
+
+cfg3 : correct3.bc
+	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
+	@sleep 1s
+	@rm $($@_TMP)
+
+slicmcfg3 : correct3.slicm.bc
+	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
+	@sleep 1s
+	@rm $($@_TMP)
+
+cfg4 : correct4.bc
+	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
+	@sleep 1s
+	@rm $($@_TMP)
+
+slicmcfg4 : correct4.slicm.bc
+	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
+	@sleep 1s
+	@rm $($@_TMP)
+
+slicm1 : correct1.slicm.bc
+
+slicm2 : correct2.slicm.bc
+
+slicm3 : correct3.slicm.bc
+
+slicm4 : correct4.slicm.bc
+
+clean :
+	rm -f *.bc *.ll
+
+.PHONY : all clean $(CASES) cfg1 cfg2 cfg3 cfg4 slicmcfg1 slicmcfg2 slicmcfg3 slicmcfg4
 
 %.ll : %.bc
-	llvm-dis -o $@ $<
+	$(llvm-dis) -o $@ $<
 
 %.bc : %.c
-	clang -emit-llvm -c -o $@ $<
+	$(clang) -emit-llvm -c -o $@ $<
 
 %.slicm.bc : %.bc
-	opt -stats -load $(PASSLIB) -slicm -o $@ $<
+	$(opt) -debug -stats -load $(PASSLIB) -slicm -o $@ $<
