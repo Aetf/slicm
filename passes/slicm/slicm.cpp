@@ -107,7 +107,7 @@ struct SLICM : public LoopPass
         // AU.addPreservedID(LoopSimplifyID);      // 583 - commented out
         AU.addRequired<TargetLibraryInfo>();
         AU.addRequired<ProfileInfo>();
-        AU.addRequired<LAMPLoadProfile>();
+        //AU.addRequired<LAMPLoadProfile>();
     }
 
     using llvm::Pass::doFinalization;
@@ -179,6 +179,11 @@ private:
     ///
     void hoist(Instruction &I);
 
+    /// speculativeHoist - When an instruction is found unsafe to hoist, but the program
+    /// correctness can be kept with fix up code, hoist it.
+    ///
+    void speculativeHoist(Instruction &I);
+
     /// isSafeToExecuteUnconditionally - Only sink or hoist an instruction if it
     /// is not a trapping instruction or if it is a trapping instruction and is
     /// guaranteed to execute.
@@ -200,7 +205,7 @@ private:
         return CurAST->getAliasSetForPointer(V, Size, TBAAInfo).isMod();
     }
 
-    bool canSinkOrHoistInst(Instruction &I);
+    bool canSinkOrHoistInst(Instruction& I, bool *needsFixup = NULL);
     bool isNotUsedInLoop(Instruction &I);
 
     void PromoteAliasSet(AliasSet &AS,
@@ -388,14 +393,16 @@ void SLICM::HoistRegion(DomTreeNode *N)
     assert(N != 0 && "Null dominator tree node?");
     BasicBlock *BB = N->getBlock();
 
+    DEBUG(dbgs() << "HoistRegion running on block: " << BB->getName() << "\n");
+
     // If this subregion is not in the top level loop at all, exit.
     if (!CurLoop->contains(BB)) { return; }
 
     // Only need to process the contents of this block if it is not part of a
     // subloop (which would already have been processed).
     if (!inSubLoop(BB))
-        for (BasicBlock::iterator II = BB->begin(), E = BB->end(); II != E;) {
-            Instruction &I = *II++;
+        for (BasicBlock::iterator II = BB->begin(), E = BB->end(); II != E; II++) {
+            Instruction &I = *II;
 
             // Try constant folding this instruction.  If all the operands are
             // constants, it is technically hoistable, but it would be better to just
@@ -413,9 +420,18 @@ void SLICM::HoistRegion(DomTreeNode *N)
             // if all of the operands of the instruction are loop invariant and if it
             // is safe to hoist the instruction.
             //
-            if (CurLoop->hasLoopInvariantOperands(&I) && canSinkOrHoistInst(I) &&
-                isSafeToExecuteUnconditionally(I)) {
-                hoist(I);
+            bool needsFixup = false;
+            if (CurLoop->hasLoopInvariantOperands(&I)
+                && isSafeToExecuteUnconditionally(I)
+                && canSinkOrHoistInst(I, &needsFixup)) {
+                if (needsFixup) {
+                    speculativeHoist(I);
+                    // speculative hoist has splited the BB, no more instructions in this one.
+                    break;
+                }
+                else {
+                    hoist(I);
+                }
             }
         }
 
@@ -428,7 +444,7 @@ void SLICM::HoistRegion(DomTreeNode *N)
 /// canSinkOrHoistInst - Return true if the hoister and sinker can handle this
 /// instruction.
 ///
-bool SLICM::canSinkOrHoistInst(Instruction &I)
+bool SLICM::canSinkOrHoistInst(Instruction& I, bool *needsFixup)
 {
     // Loads have extra constraints we have to verify before we can hoist them.
     if (LoadInst *LI = dyn_cast<LoadInst>(&I)) {
@@ -445,7 +461,17 @@ bool SLICM::canSinkOrHoistInst(Instruction &I)
             return true;
         }
 
-        // Don't hoist loads which have may-aliased stores in loop.
+        // We can hoist loads with some fixup code, if the caller is aware of it
+        static int cnt = 0;
+        if (needsFixup) {
+            if (cnt++ != 4)
+                return false;
+            DEBUG(dbgs() << "Found speculative hoistable instruction: " << I << "\n");
+            *needsFixup = true;
+            return true;
+        }
+
+        // Otherwise don't hoist loads which have may-aliased stores in loop.
         uint64_t Size = 0;
         if (LI->getType()->isSized()) {
             Size = AA->getTypeStoreSize(LI->getType());
@@ -517,7 +543,6 @@ bool SLICM::isNotUsedInLoop(Instruction &I)
     }
     return true;
 }
-
 
 /// sink - When an instruction is found to only be used outside of the loop,
 /// this function moves it to the exit blocks and patches up SSA form as needed.
@@ -666,6 +691,19 @@ void SLICM::hoist(Instruction &I)
     else if (isa<CallInst>(I)) { ++NumMovedCalls; }
     ++NumHoisted;
     Changed = true;
+}
+
+/// speculativeHoist - When an instruction is found unsafe to hoist, but the program
+/// correctness can be kept with fix up code, hoist it.
+///
+void SLICM::speculativeHoist(Instruction &I)
+{
+    DEBUG(dbgs() << "SLICM speculative hoisting to " << Preheader->getName() << ": "
+                << I << "\n");
+
+    BasicBlock *homeBB = I.getParent();
+    BasicBlock *restBB = SplitBlock(homeBB, &I, this);
+    restBB->setName(homeBB->getName() + ".rest");
 }
 
 /// isSafeToExecuteUnconditionally - Only sink or hoist an instruction if it is
