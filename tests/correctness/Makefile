@@ -1,6 +1,6 @@
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-PASSLIB = $(THIS_DIR)../build/Debug+Asserts/lib/slicm.so
-LAMPHOOK = $(THIS_DIR)../build/Debug+Asserts/lib/liblamphooks.a ../build/Debug+Asserts/lib/liblamputils.a
+LEVEL := "../.."
+PASSLIB = $(THIS_DIR)$(LEVEL)/build/Release+Asserts/lib/slicm.so
 
 RESULTDIR = $(THIS_DIR)results
 OUTPUTDIR = $(THIS_DIR)output
@@ -11,12 +11,17 @@ all : $(CASES)
 
 case1 : correct1.bc
 
-cfg1 : correct1.ll correct1.bc
-	$(eval TMP := $(shell opt -view-cfg correct1.bc 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
-	sleep 1s
-	rm $(TMP)
+cfg1 : correct1.bc
+	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
+	@sleep 1s
+	@rm $($@_TMP)
 
-.PHONY : all $(CASES)
+slicmcfg1 : correct1.slicm.bc
+	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
+	@sleep 1s
+	@rm $($@_TMP)
+
+.PHONY : all $(CASES) cfg1
 
 %.ll : %.bc
 	llvm-dis -o $@ $<
