@@ -82,6 +82,7 @@ DisablePromotion("disable-slicm-promotion", cl::Hidden,
                  cl::desc("Disable memory promotion in SLICM pass"));
 
 namespace {
+class RedoBBBuilder;
 struct SLICM : public LoopPass
 {
     static char ID; // Pass identification, replacement for typeid
@@ -119,14 +120,6 @@ struct SLICM : public LoopPass
     }
 
 private:
-    typedef std::pair<Instruction*, Instruction*> InstrPair;
-    struct first_eq_with
-    {
-        first_eq_with(Instruction *other) : mine(other) { }
-        bool operator ()(const InstrPair &obj) const { return obj.first == mine; }
-        Instruction *mine;
-    };
-
     AliasAnalysis *AA;       // Current AliasAnalysis information
     LoopInfo      *LI;       // Current LoopInfo
     DominatorTree *DT;       // Dominator Tree for the current Loop.
@@ -137,12 +130,15 @@ private:
     // State that is updated as we process loops.
     bool Changed;            // Set to true when we change anything.
     BasicBlock *Preheader;   // The preheader block of the current loop...
+    BasicBlock *PostPreheader;  // The block after preheader...
+    BasicBlock *PrePreheader; // The block before preheader...
     Loop *CurLoop;           // The current loop we are working on...
     AliasSetTracker *CurAST; // AliasSet information for the current loop...
     bool MayThrow;           // The current loop contains an instruction which
                              // may throw, thus preventing code motion of
                              // instructions with side effects.
     DenseMap<Loop *, AliasSetTracker *> LoopToAliasSetMap;
+    DenseMap<Instruction *, Value *> LoadToFlagMap;
 
     /// cloneBasicBlockAnalysis - Simple Analysis hook. Clone alias set info.
     void cloneBasicBlockAnalysis(BasicBlock *From, BasicBlock *To, Loop *L);
@@ -213,16 +209,19 @@ private:
         return CurAST->getAliasSetForPointer(V, Size, TBAAInfo).isMod();
     }
 
+
+    BasicBlock *getOrCreatePostPreheader();
+    BasicBlock *getOrCreatePrePreheader();
     bool canSinkOrHoistInst(Instruction& I, bool *needsFixup = NULL);
     bool isNotUsedInLoop(Instruction &I);
 
-    Value *createCheckFlagFor(Instruction &I);
+    Value *createCheckFlagFor(Instruction &I, BasicBlock *homeBB);
     void buildRedoBlockFor(Instruction &I, BasicBlock *redoBB);
-    void hoistableListFrom(Instruction* I, Instruction* newI, std::vector< SLICM::InstrPair >& resultList);
 
     void PromoteAliasSet(AliasSet &AS,
                          SmallVectorImpl<BasicBlock *> &ExitBlocks,
                          SmallVectorImpl<Instruction *> &InsertPts);
+    friend class RedoBBBuilder;
 };
 }
 
@@ -279,6 +278,10 @@ bool SLICM::runOnLoop(Loop *L, LPPassManager &LPM)
     // Get the preheader block to move instructions into...
     Preheader = L->getLoopPreheader();
 
+    // PrePreheader and PostPreheader are layily created
+    PrePreheader = 0;
+    PostPreheader = 0;
+
     // Loop over the body of this loop, looking for calls, invokes, and stores.
     // Because subloops have already been incorporated into AST, we skip blocks in
     // subloops.
@@ -334,6 +337,9 @@ bool SLICM::runOnLoop(Loop *L, LPPassManager &LPM)
     // Clear out loops state information for the next iteration
     CurLoop = 0;
     Preheader = 0;
+    PrePreheader = 0;
+    PostPreheader = 0;
+    LoadToFlagMap.clear();
 
     // If this loop is nested inside of another one, save the alias information
     // for when we process the outer loop.
@@ -405,13 +411,21 @@ void SLICM::HoistRegion(DomTreeNode *N)
     assert(N != 0 && "Null dominator tree node?");
     BasicBlock *BB = N->getBlock();
 
-    DEBUG(dbgs() << "HoistRegion running on block: " << BB->getName() << "\n");
+    DEBUG(dbgs() << "HoistRegion trying running on block: " << BB->getName() << "\n");
 
     // If this subregion is not in the top level loop at all, exit.
     if (!CurLoop->contains(BB)) { return; }
 
-    // If this subregion is a redo BB, exit.
-    if (BB->getName().endswith(".redo")) { return; }
+    // If this subregion is a redo BB, recurse to children and exit.
+    if (BB->getName().endswith(".redo")) {
+        const std::vector<DomTreeNode *> &Children = N->getChildren();
+        for (unsigned i = 0, e = Children.size(); i != e; ++i) {
+            HoistRegion(Children[i]);
+        }
+        return;
+    }
+
+    DEBUG(dbgs() << "HoistRegion running on block: " << BB->getName() << "\n");
 
     // Only need to process the contents of this block if it is not part of a
     // subloop (which would already have been processed).
@@ -708,6 +722,32 @@ void SLICM::hoist(Instruction &I)
     Changed = true;
 }
 
+BasicBlock *SLICM::getOrCreatePrePreheader()
+{
+    if (PrePreheader) return PrePreheader;
+    if (!Preheader) return 0;
+
+    DEBUG(dbgs() << "Creating pre-preheader on preheader: " << Preheader->getName() << "\n");
+
+    PrePreheader = Preheader;
+    Instruction *first = &(Preheader->getInstList().front());
+    Preheader = SplitBlock(Preheader, first, this);
+    std::string name = PrePreheader->getName();
+    PrePreheader->setName(name + ".prevar");
+    Preheader->setName(name);
+    return PrePreheader;
+}
+
+BasicBlock* SLICM::getOrCreatePostPreheader()
+{
+    if (PostPreheader) return PostPreheader;
+    if (!Preheader) { return 0; }
+
+    PostPreheader = SplitBlock(Preheader, Preheader->getTerminator(), this);
+    PostPreheader->setName(Preheader->getName() + ".var");
+    return PostPreheader;
+}
+
 /// speculativeHoist - When an instruction is found unsafe to hoist, but the program
 /// correctness can be kept with fix up code, hoist it.
 ///
@@ -715,7 +755,6 @@ void SLICM::speculativeHoist(Instruction &I)
 {
     DEBUG(dbgs() << "SLICM speculative hoisting to " << Preheader->getName() << ": "
                 << I << "\n");
-
     // build home/rest/redo structure
     BasicBlock *homeBB = I.getParent();
     BasicBlock *redoBB = SplitBlock(homeBB, &I, this);
@@ -727,7 +766,8 @@ void SLICM::speculativeHoist(Instruction &I)
     restBB->setName(homeBB->getName() + ".rest");
 
     homeBB->getTerminator()->eraseFromParent();
-    BranchInst::Create(redoBB, restBB, createCheckFlagFor(I), homeBB);
+    auto flag = createCheckFlagFor(I, homeBB);
+    BranchInst::Create(redoBB, restBB, flag, homeBB);
 
     // hoist I to preheader
     hoist(I);
@@ -737,84 +777,177 @@ void SLICM::speculativeHoist(Instruction &I)
     DEBUG(dbgs() << "Built redoBB: \n" << *redoBB);
 }
 
-Value *SLICM::createCheckFlagFor(Instruction &I)
+Value *SLICM::createCheckFlagFor(Instruction &I, BasicBlock *homeBB)
 {
-    return ConstantInt::getTrue(I.getContext());
+    BasicBlock *prepre = getOrCreatePrePreheader();
+    AllocaInst *flag = new AllocaInst(Type::getInt1Ty(I.getContext()),
+                                      "", prepre->getTerminator());
+
+    new StoreInst(ConstantInt::getFalse(I.getContext()),
+                  flag, prepre->getTerminator());
+    LoadInst *var = new LoadInst(flag, "", homeBB);
+
+    LoadToFlagMap[&I] = flag;
+    return var;
+}
+
+namespace {
+    class RedoBBBuilder
+    {
+        typedef std::pair<Instruction*, Value*> InstrPair;
+        struct first_eq_with
+        {
+            first_eq_with(Instruction *other) : mine(other) { }
+            bool operator ()(const InstrPair &obj) const { return obj.first == mine; }
+            Instruction *mine;
+        };
+
+        std::vector<InstrPair> wouldRemovedList;
+        SLICM *pass;
+        Loop *curLoop;
+
+        BasicBlock *redoBB;
+        Instruction *CurInst;
+
+    public:
+        RedoBBBuilder(SLICM *pass)
+            : pass(pass)
+            , curLoop(pass->CurLoop)
+            { }
+
+        void buildFrom(Instruction *I, BasicBlock *redoBB)
+        {
+            wouldRemovedList.clear();
+            this->redoBB = redoBB;
+
+            Value *var = addToRedoBB(I);
+
+            // start recursing
+            CurInst = I;
+            recursiveBuild();
+            // patch output
+            patchOutputFor(I, var);
+            for (auto pair : wouldRemovedList) {
+                patchOutputFor(pair.first, pair.second);
+            }
+        }
+
+    private:
+        bool wouldRemove(Instruction *Inst)
+        {
+            return std::find_if(wouldRemovedList.begin(),
+                                wouldRemovedList.end(),
+                                first_eq_with(Inst))
+            != wouldRemovedList.end();
+        }
+
+        void recursiveBuild()
+        {
+            DEBUG(dbgs() << "RedoBBBuilder::recurisiveBuild on " << *CurInst << "\n");
+            SmallVector<Instruction*, 8> localResult;
+
+            for (Value::use_iterator it = CurInst->use_begin(), ite = CurInst->use_end();
+                 it != ite; it++) {
+                if (Instruction *Inst = dyn_cast<Instruction>(*it)) {
+                    if (Inst->getParent() == pass->getOrCreatePostPreheader()) {
+                        continue;
+                    }
+                    // check if Inst is hoistable
+                    bool hoistable = true;
+                    for (unsigned i = 0, e = Inst->getNumOperands(); i != e; i++) {
+                        Value *operand = Inst->getOperand(i);
+
+                        // if the operand is already in wouldRemovedList or is CurInst
+                        if (Instruction *operInst = dyn_cast<Instruction>(operand)) {
+                            if (operInst == CurInst) continue;
+                            if (wouldRemove(operInst))
+                                continue;
+                        }
+
+                        if (!curLoop->isLoopInvariant(operand)) {
+                            hoistable = false;
+                            break;
+                        }
+                    }
+
+                    // hoistable, include it in redoBB
+                    if (hoistable) {
+                        auto newVar = addToRedoBB(Inst);
+                        // internal book keeping
+                        localResult.push_back(Inst);
+                        wouldRemovedList.push_back(std::make_pair(Inst, newVar));
+                    }
+                }
+            }
+
+            // Use BFS recursive order, in case of:
+            //        I
+            //      /   \
+            //     /     \
+            //   Inst1  Inst2
+            //     \     /
+            //      \   /
+            //      Inst12
+            for (unsigned i = 0, e = localResult.size(); i != e; i++) {
+                CurInst = localResult[i];
+                recursiveBuild();
+            }
+        }
+
+        Value *addToRedoBB(Instruction *Inst)
+        {
+            DEBUG(dbgs() << "Adding (" << *Inst << ") to redoBB\n");
+
+            auto newInst = Inst->clone();
+
+            // store output to stack variable
+            Value *var = createStackValueFor(Inst);
+
+            // add to redoBB
+            newInst->insertBefore(redoBB->getTerminator());
+            new StoreInst(newInst, var, redoBB->getTerminator());
+
+            return var;
+        }
+
+        Value *createStackValueFor(Instruction *Inst)
+        {
+            DEBUG(dbgs() << "Creating stack value for (" << *Inst << ")\n");
+            BasicBlock *prepre = pass->getOrCreatePrePreheader();
+            BasicBlock *postpre = pass->getOrCreatePostPreheader();
+
+            DEBUG(dbgs() << "Got prepre:\n" << *prepre << "\n");
+            DEBUG(dbgs() << "Got postpre:\n" << *postpre << "\n");
+            AllocaInst *var = new AllocaInst(Inst->getType(),
+                                             Inst->getName() + ".var",
+                                             prepre->getTerminator());
+            new StoreInst(Inst, var, postpre->getTerminator());
+            return var;
+        }
+
+        void patchOutputFor(Instruction *I, Value *var)
+        {
+            for (auto it = I->use_begin(), ite = I->use_end(); it != ite; it++) {
+                if (Instruction *userInst = dyn_cast<Instruction>(*it)) {
+                    if (userInst->getParent() == pass->getOrCreatePostPreheader()) {
+                        continue;
+                    }
+                    LoadInst *ld = new LoadInst(var, "", userInst);
+                    userInst->replaceUsesOfWith(I, ld);
+                }
+            }
+        }
+    };
 }
 
 void SLICM::buildRedoBlockFor(Instruction &I, BasicBlock *redoBB)
 {
-    Instruction *newI = I.clone();
-    newI->insertBefore(redoBB->getTerminator());
-
-    std::vector<InstrPair> resultList;
-    hoistableListFrom(&I, newI, resultList);
-
-    for (auto pair : resultList) {
-        pair.second->insertBefore(redoBB->getTerminator());
-    }
-}
-
-void SLICM::hoistableListFrom(Instruction *I, Instruction *newI,
-                                  std::vector<InstrPair> &resultList)
-{
-    DEBUG(dbgs() << "findHoistableIfRemove on " << *I << "\n");
-    SmallVector<InstrPair, 8> localResult;
-
-    for (Value::use_iterator it = I->use_begin(), ite = I->use_end(); it != ite; it++) {
-        if (Instruction *Inst = dyn_cast<Instruction>(*it)) {
-            // if Inst is hoistable
-            bool hoistable = true;
-            for (unsigned i = 0, e = Inst->getNumOperands(); i != e; i++) {
-                Value *operand = Inst->getOperand(i);
-
-                if (Instruction *operInst = dyn_cast<Instruction>(operand)) {
-                    if (operInst == I) continue;
-                    if (std::find_if(resultList.begin(), resultList.end(),
-                        first_eq_with(operInst)) != resultList.end())
-                        continue;
-                }
-
-                if (!CurLoop->isLoopInvariant(operand)) {
-                    hoistable = false;
-                    break;
-                }
-            }
-
-            if (hoistable) {
-                auto newInst = Inst->clone();
-                // fix cloned instruction's operands
-                for (unsigned i = 0, e = Inst->getNumOperands(); i != e; i++) {
-                    if (Instruction *operInst = dyn_cast<Instruction>(Inst->getOperand(i))) {
-                        if (operInst == I) {
-                            newInst->setOperand(i, newI);
-                        } else {
-                            auto it = std::find_if(resultList.begin(), resultList.end(),
-                                first_eq_with(operInst));
-                            if (it != resultList.end()) {
-                                newInst->setOperand(i, it->second);
-                            }
-                        }
-                    }
-                }
-                auto pair = std::make_pair(Inst, newInst);
-                localResult.push_back(pair);
-                resultList.push_back(pair);
-            }
-        }
-    }
-
-    // Use BFS recursive search, in case of:
-    //        I
-    //      /   \
-    //     /     \
-    //   Inst1  Inst2
-    //     \     /
-    //      \   /
-    //      Inst12
-    for (unsigned i = 0, e = localResult.size(); i != e; i++) {
-        hoistableListFrom(localResult[i].first, localResult[i].second, resultList);
-    }
+    RedoBBBuilder builder(this);
+    builder.buildFrom(&I, redoBB);
+    // reset flag
+    new StoreInst(ConstantInt::getFalse(I.getContext()),
+                  LoadToFlagMap[&I],
+                  redoBB->getTerminator());
 }
 
 /// isSafeToExecuteUnconditionally - Only sink or hoist an instruction if it is
