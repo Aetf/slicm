@@ -15,13 +15,17 @@ llvm-dis = $(LLVMHOME)/bin/llvm-dis
 
 all : $(CASES)
 
-case1 : correct1.bc
+case1 : correct1 correct1.slicm
+	./check.sh $< $(OUTPUTDIR)
 
-case2 : correct2.bc
+case2 : correct2 correct2.slicm
+	./check.sh $< $(OUTPUTDIR)
 
-case3 : correct3.bc
+case3 : correct3 correct3.slicm
+	./check.sh $< $(OUTPUTDIR)
 
-case4 : correct4.bc
+case4 : correct4 correct4.slicm
+	./check.sh $< $(OUTPUTDIR)
 
 cfg1 : correct1.bc
 	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
@@ -73,6 +77,8 @@ slicm4 : correct4.slicm.bc
 
 clean :
 	rm -f *.bc *.ll
+	rm -f correct{1,2,3,4}
+	rm -f correct{1,2,3,4}.slicm
 
 .PHONY : all clean $(CASES) cfg1 cfg2 cfg3 cfg4 slicmcfg1 slicmcfg2 slicmcfg3 slicmcfg4
 
@@ -84,3 +90,9 @@ clean :
 
 %.slicm.bc : %.bc
 	$(opt) -debug -stats -load $(PASSLIB) -slicm -o $@ $<
+
+correct% : correct%.bc
+	$(clang) -o $@ $<
+
+correct%.slicm : correct%.slicm.bc
+	$(clang) -o $@ $<
