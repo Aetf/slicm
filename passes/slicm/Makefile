@@ -14,6 +14,11 @@ LIBRARYNAME=slicm
 LOADABLE_MODULE=1
 
 #
+# Build use c++11 standard
+#
+CPPFLAGS += -std=c++11
+
+#
 # Include Makefile.common so we know what to do.
 #
 include $(LEVEL)/Makefile.common
