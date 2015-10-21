@@ -209,6 +209,7 @@ private:
         return CurAST->getAliasSetForPointer(V, Size, TBAAInfo).isMod();
     }
 
+    AliasSet &getAliasSetForLoadSrc(LoadInst* LI);
 
     BasicBlock *getOrCreatePostPreheader();
     BasicBlock *getOrCreatePrePreheader();
@@ -216,6 +217,7 @@ private:
     bool isNotUsedInLoop(Instruction &I);
 
     Value *createCheckFlagFor(Instruction &I, BasicBlock *homeBB);
+    void insertCheckFor(LoadInst* LI, Value* val);
     void buildRedoBlockFor(Instruction &I, BasicBlock *redoBB);
 
     void PromoteAliasSet(AliasSet &AS,
@@ -470,6 +472,17 @@ void SLICM::HoistRegion(DomTreeNode *N)
     }
 }
 
+AliasSet &SLICM::getAliasSetForLoadSrc(LoadInst *LI)
+{
+    uint64_t Size = 0;
+    if (LI->getType()->isSized()) {
+        Size = AA->getTypeStoreSize(LI->getType());
+    }
+    return CurAST->getAliasSetForPointer(LI->getOperand(0),
+                                         Size,
+                                         LI->getMetadata(LLVMContext::MD_tbaa));
+}
+
 /// canSinkOrHoistInst - Return true if the hoister and sinker can handle this
 /// instruction.
 ///
@@ -490,7 +503,13 @@ bool SLICM::canSinkOrHoistInst(Instruction& I, bool *needsFixup)
             return true;
         }
 
-        // We can hoist loads with some fixup code, if the caller is aware of it
+        // Can gaurantee no write to the loaded memory
+        if (!getAliasSetForLoadSrc(LI).isMod()) {
+            return true;
+        }
+
+        // If the caller is aware of it,
+        // we can hoist loads with some fixup code
         static int cnt = 0;
         if (needsFixup) {
             if (cnt++ != 4)
@@ -500,13 +519,8 @@ bool SLICM::canSinkOrHoistInst(Instruction& I, bool *needsFixup)
             return true;
         }
 
-        // Otherwise don't hoist loads which have may-aliased stores in loop.
-        uint64_t Size = 0;
-        if (LI->getType()->isSized()) {
-            Size = AA->getTypeStoreSize(LI->getType());
-        }
-        return !pointerInvalidatedByLoop(LI->getOperand(0), Size,
-                                         LI->getMetadata(LLVMContext::MD_tbaa));
+        // Otherwise we can't hoist the load
+        return false;
     } else if (CallInst *CI = dyn_cast<CallInst>(&I)) {
         // Don't sink or hoist dbg info; it's legal, but not useful.
         if (isa<DbgInfoIntrinsic>(I)) {
@@ -779,6 +793,7 @@ void SLICM::speculativeHoist(Instruction &I)
 
 Value *SLICM::createCheckFlagFor(Instruction &I, BasicBlock *homeBB)
 {
+    // create flag variable
     BasicBlock *prepre = getOrCreatePrePreheader();
     AllocaInst *flag = new AllocaInst(Type::getInt1Ty(I.getContext()),
                                       "", prepre->getTerminator());
@@ -788,7 +803,35 @@ Value *SLICM::createCheckFlagFor(Instruction &I, BasicBlock *homeBB)
     LoadInst *var = new LoadInst(flag, "", homeBB);
 
     LoadToFlagMap[&I] = flag;
+
+    // insert check to potential stores
+    LoadInst *LI = cast<LoadInst>(&I);
+    // insert check to all potential alias address users
+    for (auto pointerRec : getAliasSetForLoadSrc(LI)) {
+        insertCheckFor(LI, pointerRec.getValue());
+    }
+
     return var;
+}
+
+void SLICM::insertCheckFor(LoadInst *LI, Value *val)
+{
+    for (auto it = val->use_begin(), ite = val->use_end(); it != ite; it++) {
+        if (StoreInst *SI = dyn_cast<StoreInst>(*it)) {
+            if (!CurLoop->contains(SI->getParent())) { return; }
+            DEBUG(dbgs() << "Inserting check for (" << *SI << "  ) in " << SI->getParent()->getName() << "\n");
+            // check if after the store, the memore address changed
+            LoadInst *orig = new LoadInst(LI->getOperand(0), "", SI);
+
+            Instruction *next = SI->getNextNode();
+            LoadInst *modified = new LoadInst(LI->getOperand(0), "", next);
+            CmpInst *cmp = CmpInst::Create(Instruction::ICmp,
+                                           CmpInst::ICMP_NE,
+                                           orig,
+                                           modified, "", next);
+            new StoreInst(cmp, LoadToFlagMap[LI], next);
+        }
+    }
 }
 
 namespace {
@@ -916,8 +959,6 @@ namespace {
             BasicBlock *prepre = pass->getOrCreatePrePreheader();
             BasicBlock *postpre = pass->getOrCreatePostPreheader();
 
-            DEBUG(dbgs() << "Got prepre:\n" << *prepre << "\n");
-            DEBUG(dbgs() << "Got postpre:\n" << *postpre << "\n");
             AllocaInst *var = new AllocaInst(Inst->getType(),
                                              Inst->getName() + ".var",
                                              prepre->getTerminator());
