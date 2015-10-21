@@ -119,6 +119,14 @@ struct SLICM : public LoopPass
     }
 
 private:
+    typedef std::pair<Instruction*, Instruction*> InstrPair;
+    struct first_eq_with
+    {
+        first_eq_with(Instruction *other) : mine(other) { }
+        bool operator ()(const InstrPair &obj) const { return obj.first == mine; }
+        Instruction *mine;
+    };
+
     AliasAnalysis *AA;       // Current AliasAnalysis information
     LoopInfo      *LI;       // Current LoopInfo
     DominatorTree *DT;       // Dominator Tree for the current Loop.
@@ -207,6 +215,10 @@ private:
 
     bool canSinkOrHoistInst(Instruction& I, bool *needsFixup = NULL);
     bool isNotUsedInLoop(Instruction &I);
+
+    Value *createCheckFlagFor(Instruction &I);
+    void buildRedoBlockFor(Instruction &I, BasicBlock *redoBB);
+    void findHoistableIfRemove(Instruction* I, Instruction* newI, std::vector< SLICM::InstrPair >& resultList);
 
     void PromoteAliasSet(AliasSet &AS,
                          SmallVectorImpl<BasicBlock *> &ExitBlocks,
@@ -398,11 +410,14 @@ void SLICM::HoistRegion(DomTreeNode *N)
     // If this subregion is not in the top level loop at all, exit.
     if (!CurLoop->contains(BB)) { return; }
 
+    // If this subregion is a redo BB, exit.
+    if (BB->getName().endswith(".redo")) { return; }
+
     // Only need to process the contents of this block if it is not part of a
     // subloop (which would already have been processed).
     if (!inSubLoop(BB))
-        for (BasicBlock::iterator II = BB->begin(), E = BB->end(); II != E; II++) {
-            Instruction &I = *II;
+        for (BasicBlock::iterator II = BB->begin(), E = BB->end(); II != E;) {
+            Instruction &I = *II++;
 
             // Try constant folding this instruction.  If all the operands are
             // constants, it is technically hoistable, but it would be better to just
@@ -701,9 +716,104 @@ void SLICM::speculativeHoist(Instruction &I)
     DEBUG(dbgs() << "SLICM speculative hoisting to " << Preheader->getName() << ": "
                 << I << "\n");
 
+    // build home/rest/redo structure
     BasicBlock *homeBB = I.getParent();
-    BasicBlock *restBB = SplitBlock(homeBB, &I, this);
+    BasicBlock *redoBB = SplitBlock(homeBB, &I, this);
+    redoBB->setName(homeBB->getName() + ".redo");
+
+    BasicBlock::iterator nextI(&I);
+    nextI++;
+    BasicBlock *restBB = SplitBlock(redoBB, nextI, this);
     restBB->setName(homeBB->getName() + ".rest");
+
+    homeBB->getTerminator()->eraseFromParent();
+    BranchInst::Create(redoBB, restBB, createCheckFlagFor(I), homeBB);
+
+    // hoist I to preheader
+    hoist(I);
+
+    // build up the redo block
+    buildRedoBlockFor(I, redoBB);
+    DEBUG(dbgs() << "Built redoBB: \n" << *redoBB);
+}
+
+Value *SLICM::createCheckFlagFor(Instruction &I)
+{
+    return ConstantInt::getTrue(I.getContext());
+}
+
+void SLICM::buildRedoBlockFor(Instruction &I, BasicBlock *redoBB)
+{
+    Instruction *newI = I.clone();
+    newI->insertBefore(redoBB->getTerminator());
+
+    std::vector<InstrPair> resultList;
+    findHoistableIfRemove(&I, newI, resultList);
+
+    for (auto pair : resultList) {
+        pair.second->insertBefore(redoBB->getTerminator());
+    }
+}
+
+void SLICM::findHoistableIfRemove(Instruction *I, Instruction *newI,
+                                  std::vector<InstrPair> &resultList)
+{
+    DEBUG(dbgs() << "findHoistableIfRemove on " << *I << "\n");
+    SmallVector<InstrPair, 8> localResult;
+
+    for (Value::use_iterator it = I->use_begin(), ite = I->use_end(); it != ite; it++) {
+        if (Instruction *Inst = dyn_cast<Instruction>(*it)) {
+            // if Inst is hoistable
+            bool hoistable = true;
+            for (unsigned i = 0, e = Inst->getNumOperands(); i != e; i++) {
+                Value *operand = Inst->getOperand(i);
+
+                if (Instruction *operInst = dyn_cast<Instruction>(operand)) {
+                    if (operInst == I) continue;
+                    if (std::find_if(resultList.begin(), resultList.end(),
+                        first_eq_with(operInst)) != resultList.end())
+                        continue;
+                }
+
+                if (!CurLoop->isLoopInvariant(operand)) {
+                    hoistable = false;
+                    break;
+                }
+            }
+
+            if (hoistable) {
+                auto newInst = Inst->clone();
+                for (unsigned i = 0, e = Inst->getNumOperands(); i != e; i++) {
+                    if (Instruction *operInst = dyn_cast<Instruction>(Inst->getOperand(i))) {
+                        if (operInst == I) {
+                            newInst->setOperand(i, newI);
+                        } else {
+                            auto it = std::find_if(resultList.begin(), resultList.end(),
+                                first_eq_with(operInst));
+                            if (it != resultList.end()) {
+                                newInst->setOperand(i, it->second);
+                            }
+                        }
+                    }
+                }
+                auto pair = std::make_pair(Inst, newInst);
+                localResult.push_back(pair);
+                resultList.push_back(pair);
+            }
+        }
+    }
+
+    // Use BFS recursive search, in case of:
+    //        I
+    //      /   \
+    //     /     \
+    //   Inst1  Inst2
+    //     \     /
+    //      \   /
+    //      Inst12
+    for (unsigned i = 0, e = localResult.size(); i != e; i++) {
+        findHoistableIfRemove(localResult[i].first, localResult[i].second, resultList);
+    }
 }
 
 /// isSafeToExecuteUnconditionally - Only sink or hoist an instruction if it is
