@@ -12,3 +12,12 @@ build/*
 # test dir
 tests/*/*.bc
 tests/*/*.ll
+tests/*/output/*
+tests/correctness/correct1
+tests/correctness/correct2
+tests/correctness/correct3
+tests/correctness/correct4
+tests/correctness/correct1.slicm
+tests/correctness/correct2.slicm
+tests/correctness/correct3.slicm
+tests/correctness/correct4.slicm
