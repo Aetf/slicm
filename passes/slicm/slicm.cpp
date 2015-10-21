@@ -218,7 +218,7 @@ private:
 
     Value *createCheckFlagFor(Instruction &I);
     void buildRedoBlockFor(Instruction &I, BasicBlock *redoBB);
-    void findHoistableIfRemove(Instruction* I, Instruction* newI, std::vector< SLICM::InstrPair >& resultList);
+    void hoistableListFrom(Instruction* I, Instruction* newI, std::vector< SLICM::InstrPair >& resultList);
 
     void PromoteAliasSet(AliasSet &AS,
                          SmallVectorImpl<BasicBlock *> &ExitBlocks,
@@ -748,14 +748,14 @@ void SLICM::buildRedoBlockFor(Instruction &I, BasicBlock *redoBB)
     newI->insertBefore(redoBB->getTerminator());
 
     std::vector<InstrPair> resultList;
-    findHoistableIfRemove(&I, newI, resultList);
+    hoistableListFrom(&I, newI, resultList);
 
     for (auto pair : resultList) {
         pair.second->insertBefore(redoBB->getTerminator());
     }
 }
 
-void SLICM::findHoistableIfRemove(Instruction *I, Instruction *newI,
+void SLICM::hoistableListFrom(Instruction *I, Instruction *newI,
                                   std::vector<InstrPair> &resultList)
 {
     DEBUG(dbgs() << "findHoistableIfRemove on " << *I << "\n");
@@ -783,6 +783,7 @@ void SLICM::findHoistableIfRemove(Instruction *I, Instruction *newI,
 
             if (hoistable) {
                 auto newInst = Inst->clone();
+                // fix cloned instruction's operands
                 for (unsigned i = 0, e = Inst->getNumOperands(); i != e; i++) {
                     if (Instruction *operInst = dyn_cast<Instruction>(Inst->getOperand(i))) {
                         if (operInst == I) {
@@ -812,7 +813,7 @@ void SLICM::findHoistableIfRemove(Instruction *I, Instruction *newI,
     //      \   /
     //      Inst12
     for (unsigned i = 0, e = localResult.size(); i != e; i++) {
-        findHoistableIfRemove(localResult[i].first, localResult[i].second, resultList);
+        hoistableListFrom(localResult[i].first, localResult[i].second, resultList);
     }
 }
 
