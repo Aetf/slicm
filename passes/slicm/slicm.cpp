@@ -138,7 +138,10 @@ private:
                              // may throw, thus preventing code motion of
                              // instructions with side effects.
     DenseMap<Loop *, AliasSetTracker *> LoopToAliasSetMap;
-    DenseMap<Instruction *, Value *> LoadToFlagMap;
+    DenseMap<Value *, Value *> MemAddrToFlagMap;
+    DenseMap<Instruction *, Value *> StoreCheckedByFlagMap;
+    DenseSet<Instruction *> UncheckedInst;
+    DenseSet<BasicBlock *> RedoBBs;
 
     /// cloneBasicBlockAnalysis - Simple Analysis hook. Clone alias set info.
     void cloneBasicBlockAnalysis(BasicBlock *From, BasicBlock *To, Loop *L);
@@ -214,6 +217,7 @@ private:
     BasicBlock *getOrCreatePostPreheader();
     BasicBlock *getOrCreatePrePreheader();
     bool canSinkOrHoistInst(Instruction& I, bool *needsFixup = NULL);
+    bool canSpeculativeHoist(Instruction& I);
     bool isNotUsedInLoop(Instruction &I);
 
     Value *createCheckFlagFor(Instruction &I, BasicBlock *homeBB);
@@ -341,7 +345,10 @@ bool SLICM::runOnLoop(Loop *L, LPPassManager &LPM)
     Preheader = 0;
     PrePreheader = 0;
     PostPreheader = 0;
-    LoadToFlagMap.clear();
+    MemAddrToFlagMap.clear();
+    StoreCheckedByFlagMap.clear();
+    UncheckedInst.clear();
+    RedoBBs.clear();
 
     // If this loop is nested inside of another one, save the alias information
     // for when we process the outer loop.
@@ -510,10 +517,7 @@ bool SLICM::canSinkOrHoistInst(Instruction& I, bool *needsFixup)
 
         // If the caller is aware of it,
         // we can hoist loads with some fixup code
-        static int cnt = 0;
-        if (needsFixup) {
-            if (cnt++ != 4)
-                return false;
+        if (needsFixup && canSpeculativeHoist(I)) {
             DEBUG(dbgs() << "Found speculative hoistable instruction: " << I << "\n");
             *needsFixup = true;
             return true;
@@ -563,6 +567,14 @@ bool SLICM::canSinkOrHoistInst(Instruction& I, bool *needsFixup)
     }
 
     return isSafeToExecuteUnconditionally(I);
+}
+
+bool SLICM::canSpeculativeHoist(Instruction& I)
+{
+    if (UncheckedInst.count(&I) > 0) {
+        return false;
+    }
+    return true;
 }
 
 /// isNotUsedInLoop - Return true if the only users of this instruction are
@@ -767,12 +779,13 @@ BasicBlock* SLICM::getOrCreatePostPreheader()
 ///
 void SLICM::speculativeHoist(Instruction &I)
 {
-    DEBUG(dbgs() << "SLICM speculative hoisting to " << Preheader->getName() << ": "
+    DEBUG(dbgs() << "SLICM begin speculative hoisting to " << Preheader->getName() << ": "
                 << I << "\n");
     // build home/rest/redo structure
     BasicBlock *homeBB = I.getParent();
     BasicBlock *redoBB = SplitBlock(homeBB, &I, this);
     redoBB->setName(homeBB->getName() + ".redo");
+    RedoBBs.insert(redoBB);
 
     BasicBlock::iterator nextI(&I);
     nextI++;
@@ -780,8 +793,8 @@ void SLICM::speculativeHoist(Instruction &I)
     restBB->setName(homeBB->getName() + ".rest");
 
     homeBB->getTerminator()->eraseFromParent();
-    auto flag = createCheckFlagFor(I, homeBB);
-    BranchInst::Create(redoBB, restBB, flag, homeBB);
+    auto reg = createCheckFlagFor(I, homeBB);
+    BranchInst::Create(redoBB, restBB, reg, homeBB);
 
     // hoist I to preheader
     hoist(I);
@@ -793,16 +806,26 @@ void SLICM::speculativeHoist(Instruction &I)
 
 Value *SLICM::createCheckFlagFor(Instruction &I, BasicBlock *homeBB)
 {
-    // create flag variable
-    BasicBlock *prepre = getOrCreatePrePreheader();
-    AllocaInst *flag = new AllocaInst(Type::getInt1Ty(I.getContext()),
-                                      "", prepre->getTerminator());
+    DEBUG(dbgs() << "Creating check flag for :" << I << "\n");
 
-    new StoreInst(ConstantInt::getFalse(I.getContext()),
-                  flag, prepre->getTerminator());
-    LoadInst *var = new LoadInst(flag, "", homeBB);
+    // reuse flag for the same memory address
+    Value *flag = MemAddrToFlagMap[I.getOperand(0)];
+    if (flag) {
+        DEBUG(dbgs() << "    reuse existing flag.\n");
+    } else {
+        // create flag variable
+        BasicBlock *prepre = getOrCreatePrePreheader();
+        flag = new AllocaInst(Type::getInt1Ty(I.getContext()),
+                              "", prepre->getTerminator());
 
-    LoadToFlagMap[&I] = flag;
+        new StoreInst(ConstantInt::getFalse(I.getContext()),
+                    flag, prepre->getTerminator());
+
+        MemAddrToFlagMap[I.getOperand(0)] = flag;
+    }
+
+    // load flag into register
+    LoadInst *reg = new LoadInst(flag, "", homeBB);
 
     // insert check to potential stores
     LoadInst *LI = cast<LoadInst>(&I);
@@ -811,25 +834,56 @@ Value *SLICM::createCheckFlagFor(Instruction &I, BasicBlock *homeBB)
         insertCheckFor(LI, pointerRec.getValue());
     }
 
-    return var;
+    return reg;
 }
 
 void SLICM::insertCheckFor(LoadInst *LI, Value *val)
 {
     for (auto it = val->use_begin(), ite = val->use_end(); it != ite; it++) {
         if (StoreInst *SI = dyn_cast<StoreInst>(*it)) {
-            if (!CurLoop->contains(SI->getParent())) { return; }
+            // skip those not in current loop
+            if (!CurLoop->contains(SI->getParent())) { continue; }
+            // skip redoBBs
+            if (RedoBBs.count(SI->getParent()) > 0) { continue; }
+
+            Value *memAddr = LI->getOperand(0);
+            // skip those we have checked
+            Value *flag = MemAddrToFlagMap[memAddr];
+            Value *f = StoreCheckedByFlagMap[SI];
+            if (flag == f) { continue; }
+
             DEBUG(dbgs() << "Inserting check for (" << *SI << "  ) in " << SI->getParent()->getName() << "\n");
+
             // check if after the store, the memore address changed
-            LoadInst *orig = new LoadInst(LI->getOperand(0), "", SI);
+            // %orig        = load %memAddr
+            // the STORE we checking
+            // %modified    = load %memAddr
+            // %cmp         = icmp ne, %orig, %modified
+            // %oldflgval   = load %flag
+            // %newflgval   = or %oldflgval, %cmp
+            // store  %newflgval, %flag
+            // next instr after STORE we checking
+            LoadInst *orig = new LoadInst(memAddr, "", SI);
 
             Instruction *next = SI->getNextNode();
-            LoadInst *modified = new LoadInst(LI->getOperand(0), "", next);
+            LoadInst *modified = new LoadInst(memAddr, "", next);
             CmpInst *cmp = CmpInst::Create(Instruction::ICmp,
                                            CmpInst::ICMP_NE,
-                                           orig,
-                                           modified, "", next);
-            new StoreInst(cmp, LoadToFlagMap[LI], next);
+                                           orig, modified,
+                                           "", next);
+            LoadInst *oldflgval = new LoadInst(flag, "", next);
+            BinaryOperator *newflgval = BinaryOperator::Create(Instruction::Or,
+                                                               oldflgval, cmp,
+                                                               "", next);
+            StoreInst *st = new StoreInst(newflgval, flag, next);
+            StoreCheckedByFlagMap[SI] = flag;
+
+            UncheckedInst.insert(orig);
+            UncheckedInst.insert(modified);
+            UncheckedInst.insert(cmp);
+            UncheckedInst.insert(oldflgval);
+            UncheckedInst.insert(newflgval);
+            UncheckedInst.insert(st);
         }
     }
 }
@@ -869,6 +923,7 @@ namespace {
             CurInst = I;
             recursiveBuild();
             // patch output
+            DEBUG(dbgs() << "Patching hoisted instructions' output\n");
             patchOutputFor(I, var);
             for (auto pair : wouldRemovedList) {
                 patchOutputFor(pair.first, pair.second);
@@ -892,9 +947,12 @@ namespace {
             for (Value::use_iterator it = CurInst->use_begin(), ite = CurInst->use_end();
                  it != ite; it++) {
                 if (Instruction *Inst = dyn_cast<Instruction>(*it)) {
-                    if (Inst->getParent() == pass->getOrCreatePostPreheader()) {
-                        continue;
-                    }
+                    // skip those we just created
+                    if (Inst->getParent() == pass->getOrCreatePostPreheader()) { continue; }
+                    if (pass->UncheckedInst.count(Inst) > 0) { continue; }
+                    // oops, reached BB end
+                    if (isa<TerminatorInst>(Inst)) { continue; }
+
                     // check if Inst is hoistable
                     bool hoistable = true;
                     for (unsigned i = 0, e = Inst->getNumOperands(); i != e; i++) {
@@ -939,8 +997,6 @@ namespace {
 
         Value *addToRedoBB(Instruction *Inst)
         {
-            DEBUG(dbgs() << "Adding (" << *Inst << ") to redoBB\n");
-
             auto newInst = Inst->clone();
 
             // store output to stack variable
@@ -949,6 +1005,8 @@ namespace {
             // add to redoBB
             newInst->insertBefore(redoBB->getTerminator());
             new StoreInst(newInst, var, redoBB->getTerminator());
+
+            DEBUG(dbgs() << "Clone (" << *Inst << ") as (" << *newInst << ") to redoBB\n");
 
             return var;
         }
@@ -975,6 +1033,9 @@ namespace {
                     }
                     LoadInst *ld = new LoadInst(var, "", userInst);
                     userInst->replaceUsesOfWith(I, ld);
+
+                    // Mark ld as unable for hoist
+                    pass->UncheckedInst.insert(ld);
                 }
             }
         }
@@ -983,11 +1044,12 @@ namespace {
 
 void SLICM::buildRedoBlockFor(Instruction &I, BasicBlock *redoBB)
 {
+    DEBUG(dbgs() << "Start building redoBB for " << I << "\n");
     RedoBBBuilder builder(this);
     builder.buildFrom(&I, redoBB);
     // reset flag
     new StoreInst(ConstantInt::getFalse(I.getContext()),
-                  LoadToFlagMap[&I],
+                  MemAddrToFlagMap[&I],
                   redoBB->getTerminator());
 }
 
