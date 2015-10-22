@@ -217,8 +217,26 @@ private:
     BasicBlock *getOrCreatePostPreheader();
     BasicBlock *getOrCreatePrePreheader();
     bool canSinkOrHoistInst(Instruction& I, bool *needsFixup = NULL);
+    bool isHoistableInstr(Instruction &I);
     bool canSpeculativeHoist(Instruction& I);
     bool isNotUsedInLoop(Instruction &I);
+
+    bool isRedoBB(BasicBlock *BB)
+    {
+        return RedoBBs.count(BB) > 0;
+    }
+
+    bool isPrePre(BasicBlock *BB)
+    {
+        return BB->getName().endswith(".prepre");
+    }
+
+    bool isPostPre(BasicBlock *BB)
+    {
+        return BB->getName().endswith(".postpre");
+    }
+
+    bool isFixupCode(Instruction &I);
 
     Value *createCheckFlagFor(Instruction &I, BasicBlock *homeBB);
     void insertCheckFor(LoadInst* LI, Value* val);
@@ -557,21 +575,31 @@ bool SLICM::canSinkOrHoistInst(Instruction& I, bool *needsFixup)
         return false;
     }
 
-    // Only these instructions are hoistable/sinkable.
-    if (!isa<BinaryOperator>(I) && !isa<CastInst>(I) && !isa<SelectInst>(I) &&
-        !isa<GetElementPtrInst>(I) && !isa<CmpInst>(I) &&
-        !isa<InsertElementInst>(I) && !isa<ExtractElementInst>(I) &&
-        !isa<ShuffleVectorInst>(I) && !isa<ExtractValueInst>(I) &&
-        !isa<InsertValueInst>(I)) {
+    if (!isHoistableInstr(I)) {
         return false;
     }
 
     return isSafeToExecuteUnconditionally(I);
 }
 
+bool SLICM::isHoistableInstr(Instruction &I)
+{
+    // Only these instructions are hoistable/sinkable.
+    return isa<BinaryOperator>(I)
+    || isa<CastInst>(I)
+    || isa<SelectInst>(I)
+    || isa<GetElementPtrInst>(I)
+    || isa<CmpInst>(I)
+    || isa<InsertElementInst>(I)
+    || isa<ExtractElementInst>(I)
+    || isa<ShuffleVectorInst>(I)
+    || isa<ExtractValueInst>(I)
+    || isa<InsertValueInst>(I);
+}
+
 bool SLICM::canSpeculativeHoist(Instruction& I)
 {
-    if (UncheckedInst.count(&I) > 0) {
+    if (isFixupCode(I)) {
         return false;
     }
     return true;
@@ -597,6 +625,13 @@ bool SLICM::isNotUsedInLoop(Instruction &I)
         }
     }
     return true;
+}
+
+bool SLICM::isFixupCode(Instruction &I)
+{
+    auto BB = I.getParent();
+    return isRedoBB(BB) || isPrePre(BB) || isPostPre(BB)
+    || UncheckedInst.count(&I) > 0;
 }
 
 /// sink - When an instruction is found to only be used outside of the loop,
@@ -759,7 +794,7 @@ BasicBlock *SLICM::getOrCreatePrePreheader()
     Instruction *first = &(Preheader->getInstList().front());
     Preheader = SplitBlock(Preheader, first, this);
     std::string name = PrePreheader->getName();
-    PrePreheader->setName(name + ".prevar");
+    PrePreheader->setName(name + ".prepre");
     Preheader->setName(name);
     return PrePreheader;
 }
@@ -770,7 +805,7 @@ BasicBlock* SLICM::getOrCreatePostPreheader()
     if (!Preheader) { return 0; }
 
     PostPreheader = SplitBlock(Preheader, Preheader->getTerminator(), this);
-    PostPreheader->setName(Preheader->getName() + ".var");
+    PostPreheader->setName(Preheader->getName() + ".postpre");
     return PostPreheader;
 }
 
@@ -815,17 +850,15 @@ Value *SLICM::createCheckFlagFor(Instruction &I, BasicBlock *homeBB)
     } else {
         // create flag variable
         BasicBlock *prepre = getOrCreatePrePreheader();
+        BasicBlock *postPre = getOrCreatePostPreheader();
         flag = new AllocaInst(Type::getInt1Ty(I.getContext()),
                               "", prepre->getTerminator());
 
         new StoreInst(ConstantInt::getFalse(I.getContext()),
-                    flag, prepre->getTerminator());
+                    flag, postPre->getTerminator());
 
         MemAddrToFlagMap[I.getOperand(0)] = flag;
     }
-
-    // load flag into register
-    LoadInst *reg = new LoadInst(flag, "", homeBB);
 
     // insert check to potential stores
     LoadInst *LI = cast<LoadInst>(&I);
@@ -833,6 +866,9 @@ Value *SLICM::createCheckFlagFor(Instruction &I, BasicBlock *homeBB)
     for (auto pointerRec : getAliasSetForLoadSrc(LI)) {
         insertCheckFor(LI, pointerRec.getValue());
     }
+
+    // load flag into register
+    LoadInst *reg = new LoadInst(flag, "", homeBB);
 
     return reg;
 }
@@ -843,8 +879,8 @@ void SLICM::insertCheckFor(LoadInst *LI, Value *val)
         if (StoreInst *SI = dyn_cast<StoreInst>(*it)) {
             // skip those not in current loop
             if (!CurLoop->contains(SI->getParent())) { continue; }
-            // skip redoBBs
-            if (RedoBBs.count(SI->getParent()) > 0) { continue; }
+            // skip fixup codes
+            if (isFixupCode(*SI)) { continue; }
 
             Value *memAddr = LI->getOperand(0);
             // skip those we have checked
@@ -939,6 +975,25 @@ namespace {
             != wouldRemovedList.end();
         }
 
+        bool shouldSkip(Instruction *Inst)
+        {
+            bool should = false;
+            // skip those we just created
+            if (pass->isFixupCode(*Inst)) { should = true; }
+
+            // oops, reached BB end
+            if (isa<TerminatorInst>(Inst)) { should = true; }
+
+            // wouldn't touch unhoistable instructions
+            if (!pass->isHoistableInstr(*Inst)
+                && !isa<LoadInst>(*Inst) && !isa<CallInst>(*Inst))
+            {
+                should = true;
+            }
+
+            return should;
+        }
+
         void recursiveBuild()
         {
             DEBUG(dbgs() << "RedoBBBuilder::recurisiveBuild on " << *CurInst << "\n");
@@ -947,11 +1002,7 @@ namespace {
             for (Value::use_iterator it = CurInst->use_begin(), ite = CurInst->use_end();
                  it != ite; it++) {
                 if (Instruction *Inst = dyn_cast<Instruction>(*it)) {
-                    // skip those we just created
-                    if (Inst->getParent() == pass->getOrCreatePostPreheader()) { continue; }
-                    if (pass->UncheckedInst.count(Inst) > 0) { continue; }
-                    // oops, reached BB end
-                    if (isa<TerminatorInst>(Inst)) { continue; }
+                    if (shouldSkip(Inst)) { continue; }
 
                     // check if Inst is hoistable
                     bool hoistable = true;
@@ -998,6 +1049,9 @@ namespace {
         Value *addToRedoBB(Instruction *Inst)
         {
             auto newInst = Inst->clone();
+            if (!Inst->getName().empty()) {
+                newInst->setName(Inst->getName() + ".redo");
+            }
 
             // store output to stack variable
             Value *var = createStackValueFor(Inst);
@@ -1049,7 +1103,7 @@ void SLICM::buildRedoBlockFor(Instruction &I, BasicBlock *redoBB)
     builder.buildFrom(&I, redoBB);
     // reset flag
     new StoreInst(ConstantInt::getFalse(I.getContext()),
-                  MemAddrToFlagMap[&I],
+                  MemAddrToFlagMap[I.getOperand(0)],
                   redoBB->getTerminator());
 }
 
