@@ -216,9 +216,9 @@ private:
 
     BasicBlock *getOrCreatePostPreheader();
     BasicBlock *getOrCreatePrePreheader();
-    bool canSinkOrHoistInst(Instruction& I, bool *needsFixup = NULL);
+    bool canSinkOrHoistInst(Instruction& I, bool* speculative = 0);
     bool isHoistableInstr(Instruction &I);
-    bool canSpeculativeHoist(Instruction& I);
+    bool canSpeculativeHoist(LoadInst& I);
     bool isNotUsedInLoop(Instruction &I);
 
     bool isRedoBB(BasicBlock *BB)
@@ -476,13 +476,13 @@ void SLICM::HoistRegion(DomTreeNode *N)
             // if all of the operands of the instruction are loop invariant and if it
             // is safe to hoist the instruction.
             //
-            bool needsFixup = false;
+            bool speculative = false;
             if (CurLoop->hasLoopInvariantOperands(&I)
                 && isSafeToExecuteUnconditionally(I)
-                && canSinkOrHoistInst(I, &needsFixup)) {
-                if (needsFixup) {
+                && canSinkOrHoistInst(I, &speculative)) {
+                if (speculative) {
                     speculativeHoist(I);
-                    // speculative hoist has splited the BB, no more instructions in this one.
+                    // speculative hoist has splited the BB, no more instructions in this BB.
                     break;
                 }
                 else {
@@ -511,7 +511,7 @@ AliasSet &SLICM::getAliasSetForLoadSrc(LoadInst *LI)
 /// canSinkOrHoistInst - Return true if the hoister and sinker can handle this
 /// instruction.
 ///
-bool SLICM::canSinkOrHoistInst(Instruction& I, bool *needsFixup)
+bool SLICM::canSinkOrHoistInst(Instruction& I, bool *speculative)
 {
     // Loads have extra constraints we have to verify before we can hoist them.
     if (LoadInst *LI = dyn_cast<LoadInst>(&I)) {
@@ -535,9 +535,9 @@ bool SLICM::canSinkOrHoistInst(Instruction& I, bool *needsFixup)
 
         // If the caller is aware of it,
         // we can hoist loads with some fixup code
-        if (needsFixup && canSpeculativeHoist(I)) {
+        if (speculative && canSpeculativeHoist(*LI)) {
             DEBUG(dbgs() << "Found speculative hoistable instruction: " << I << "\n");
-            *needsFixup = true;
+            *speculative = true;
             return true;
         }
 
@@ -597,12 +597,9 @@ bool SLICM::isHoistableInstr(Instruction &I)
     || isa<InsertValueInst>(I);
 }
 
-bool SLICM::canSpeculativeHoist(Instruction& I)
+bool SLICM::canSpeculativeHoist(LoadInst& I)
 {
-    if (isFixupCode(I)) {
-        return false;
-    }
-    return true;
+    return !isFixupCode(I);
 }
 
 /// isNotUsedInLoop - Return true if the only users of this instruction are
