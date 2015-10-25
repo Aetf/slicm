@@ -11,8 +11,7 @@ Value *RedoBBBuilder::createCheckFlag(LoadInst &LD)
     DEBUG(dbgs() << "Creating check flag for :" << LD << "\n");
 
     // reuse flag for the same memory address
-    Value *memAddr = LD.getOperand(0);
-    Value *flag = MemAddrToFlagMap[memAddr];
+    Value *flag = LdToFlagMap[&LD];
     if (flag) {
         DEBUG(dbgs() << "    reuse existing flag.\n");
     } else {
@@ -26,24 +25,21 @@ Value *RedoBBBuilder::createCheckFlag(LoadInst &LD)
         new StoreInst(ConstantInt::getFalse(LD.getContext()),
                     flag, postPre->getTerminator());
 
-        MemAddrToFlagMap[memAddr] = flag;
+        LdToFlagMap[&LD] = flag;
     }
 
     // insert check to potential stores
     // insert check to all potential alias address users
     for (auto pointerRec : pass->getAliasSetForLoadSrc(&LD)) {
-        insertCheck(memAddr, pointerRec.getValue());
+        insertCheck(pointerRec.getValue(), LD.getOperand(0), flag);
     }
 
     return flag;
 }
 
-/// check if value in memory at `memAddr` was changed when accessing `val`
-void RedoBBBuilder::insertCheck(Value *memAddr, Value* val)
+/// check if value in memory at `memAddr` was changed when accessing `val`, store result into flag
+void RedoBBBuilder::insertCheck(Value *val, Value *memAddr, Value* flag)
 {
-    Value *flag = MemAddrToFlagMap[memAddr];
-    assert(flag  && "Must call CreateCheckFlag before insertCheck");
-
     for (auto it = val->use_begin(), ite = val->use_end(); it != ite; it++) {
         if (StoreInst *SI = dyn_cast<StoreInst>(*it)) {
             // skip those not in current top loop
@@ -52,48 +48,71 @@ void RedoBBBuilder::insertCheck(Value *memAddr, Value* val)
             // skip instruction we don't interested in
             if (!shouldCheck(*SI)) { continue; }
 
-            // skip those we have checked
-            if (StoreCheckedByFlagMap.count(SI)) {
-                bool skip = false;
-                for (auto f : StoreCheckedByFlagMap[SI]) {
-                    if (flag == f) skip = true;
+            // if we have checked this store for this memAddr
+            BinaryOperator *chkRes = 0;
+            if (StoreToCheckMap.count(SI)) {
+                for (auto pair : StoreToCheckMap[SI]) {
+                    if (pair.first == memAddr) {
+                        DEBUG(dbgs() << "Found existing check for (" << *SI << "  ) in "
+                                    << SI->getParent()->getName() << "\n");
+                        chkRes = pair.second;
+                    }
                 }
-                if (skip) continue;
+            }
+            if (!chkRes) {
+                DEBUG(dbgs() << "Inserting check for (" << *SI << "  ) in "
+                            << SI->getParent()->getName() << "\n");
+
+                // check if after the store, the memore address changed
+                // %orig        = load %memAddr
+                // the STORE we checking
+                // %modified    = load %memAddr
+                // %cmp         = icmp ne, %orig, %modified
+                // %oldflgval   = load %flag
+                // %newflgval   = or %oldflgval, %cmp
+                // store  %newflgval, %flag
+                // next instr after STORE we checking
+                LoadInst *orig = new LoadInst(memAddr, "", SI);
+
+                Instruction *next = SI->getNextNode();
+                LoadInst *modified = new LoadInst(memAddr, "", next);
+                CmpInst *cmp = CmpInst::Create(Instruction::ICmp,
+                                            CmpInst::ICMP_NE,
+                                            orig, modified,
+                                            "", next);
+                LoadInst *oldflgval = new LoadInst(flag, "", next);
+                chkRes = BinaryOperator::Create(Instruction::Or,
+                                               oldflgval, cmp,
+                                               "chk", next);
+                // set consitant name
+                orig->setName(chkRes->getName() + ".orig");
+                modified->setName(chkRes->getName() + ".mod");
+                cmp->setName(chkRes->getName() + ".cmp");
+                oldflgval->setName(chkRes->getName() + ".oldval");
+
+                CheckingInstrs.insert(orig);
+                CheckingInstrs.insert(modified);
+                CheckingInstrs.insert(cmp);
+                CheckingInstrs.insert(oldflgval);
+                CheckingInstrs.insert(chkRes);
+
+                StoreToCheckMap[SI].push_back({memAddr, chkRes});
             }
 
-            DEBUG(dbgs() << "Inserting check for (" << *SI << "  ) in "
-                        << SI->getParent()->getName() << "\n");
+            // if we have stored the check result to the flag
+            Check pair = {memAddr, chkRes};
+            for (auto f : CheckToFlagMap[pair]) {
+                if (f == flag) {
+                    DEBUG(dbgs() << "Existing flag store found\n");
+                    return;
+                }
+            }
 
-            // check if after the store, the memore address changed
-            // %orig        = load %memAddr
-            // the STORE we checking
-            // %modified    = load %memAddr
-            // %cmp         = icmp ne, %orig, %modified
-            // %oldflgval   = load %flag
-            // %newflgval   = or %oldflgval, %cmp
-            // store  %newflgval, %flag
-            // next instr after STORE we checking
-            LoadInst *orig = new LoadInst(memAddr, "orig.chk", SI);
-
-            Instruction *next = SI->getNextNode();
-            LoadInst *modified = new LoadInst(memAddr, "mod.chk", next);
-            CmpInst *cmp = CmpInst::Create(Instruction::ICmp,
-                                           CmpInst::ICMP_NE,
-                                           orig, modified,
-                                           "chk", next);
-            LoadInst *oldflgval = new LoadInst(flag, "", next);
-            BinaryOperator *newflgval = BinaryOperator::Create(Instruction::Or,
-                                                               oldflgval, cmp,
-                                                               "", next);
-            StoreInst *st = new StoreInst(newflgval, flag, next);
-            StoreCheckedByFlagMap[SI].push_back(flag);
-
-            CheckingInstrs.insert(orig);
-            CheckingInstrs.insert(modified);
-            CheckingInstrs.insert(cmp);
-            CheckingInstrs.insert(oldflgval);
-            CheckingInstrs.insert(newflgval);
+            DEBUG(dbgs() << "Store check result to " << flag->getName() << "\n");
+            StoreInst *st = new StoreInst(chkRes, flag, chkRes->getNextNode());
             CheckingInstrs.insert(st);
+
+            CheckToFlagMap[pair].push_back(flag);
         }
     }
 }

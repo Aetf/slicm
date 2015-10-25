@@ -18,6 +18,8 @@ struct SLICM;
 class RedoBBBuilder
 {
     typedef std::pair<Instruction*, Value*> InstrPair;
+    // check result performed on memaddr
+    typedef std::pair<Value*, BinaryOperator*> Check;
     struct first_eq_with
     {
         first_eq_with(Instruction *other) : mine(other) { }
@@ -27,10 +29,14 @@ class RedoBBBuilder
 
     SLICM *pass;
 
-    DenseMap<Value *, Value *> MemAddrToFlagMap;
-    DenseMap<Instruction *, Value *> InstToStvarMap;
+    DenseMap<LoadInst *, Value *> LdToFlagMap;
     DenseMap<LoadInst*, BasicBlock *> LdToRedoBB;
-    DenseMap<StoreInst *, SmallVector<Value *, 2>> StoreCheckedByFlagMap;
+
+    DenseMap<Instruction *, Value *> InstToStvarMap;
+
+    DenseMap<StoreInst *, SmallVector<Check, 2>> StoreToCheckMap;
+    DenseMap<Check, SmallVector<Value *, 2>> CheckToFlagMap;
+
     DenseSet<Instruction *> CheckingInstrs;
 
 public:
@@ -58,8 +64,8 @@ private:
     /// the memory at `LD.getOperand(0)` is changed
     Value *createCheckFlag(LoadInst &I);
 
-    /// check if value in memory at `memAddr` was changed when accessing `val`
-    void insertCheck(Value* memAddr, Value* val);
+    /// check if value in memory at `memAddr` was changed when accessing `val`, store result into flag
+    void insertCheck(Value *val, Value *memAddr, Value* flag);
 
     /// Create a stack value to store `Inst`'s output
     Value *createStackValue(Instruction *Inst);
