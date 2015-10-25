@@ -19,7 +19,7 @@ class RedoBBBuilder
 {
     typedef std::pair<Instruction*, Value*> InstrPair;
     // check result performed on memaddr
-    typedef std::pair<Value*, BinaryOperator*> Check;
+    typedef std::pair<Value*, CmpInst*> Check;
     struct first_eq_with
     {
         first_eq_with(Instruction *other) : mine(other) { }

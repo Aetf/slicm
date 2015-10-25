@@ -49,7 +49,7 @@ void RedoBBBuilder::insertCheck(Value *val, Value *memAddr, Value* flag)
             if (!shouldCheck(*SI)) { continue; }
 
             // if we have checked this store for this memAddr
-            BinaryOperator *chkRes = 0;
+            CmpInst *chkRes = 0;
             if (StoreToCheckMap.count(SI)) {
                 for (auto pair : StoreToCheckMap[SI]) {
                     if (pair.first == memAddr) {
@@ -63,41 +63,32 @@ void RedoBBBuilder::insertCheck(Value *val, Value *memAddr, Value* flag)
                 DEBUG(dbgs() << "Inserting check for (" << *SI << "  ) in "
                             << SI->getParent()->getName() << "\n");
 
-                // check if after the store, the memore address changed
+                // check if before and after the store, the memore address changed
+                //
                 // %orig        = load %memAddr
                 // the STORE we checking
                 // %modified    = load %memAddr
                 // %cmp         = icmp ne, %orig, %modified
-                // %oldflgval   = load %flag
-                // %newflgval   = or %oldflgval, %cmp
-                // store  %newflgval, %flag
-                // next instr after STORE we checking
                 LoadInst *orig = new LoadInst(memAddr, "", SI);
 
                 Instruction *next = SI->getNextNode();
                 LoadInst *modified = new LoadInst(memAddr, "", next);
-                CmpInst *cmp = CmpInst::Create(Instruction::ICmp,
-                                            CmpInst::ICMP_NE,
-                                            orig, modified,
-                                            "", next);
-                LoadInst *oldflgval = new LoadInst(flag, "", next);
-                chkRes = BinaryOperator::Create(Instruction::Or,
-                                               oldflgval, cmp,
-                                               "chk", next);
-                // set consitant name
-                orig->setName(chkRes->getName() + ".orig");
-                modified->setName(chkRes->getName() + ".mod");
-                cmp->setName(chkRes->getName() + ".cmp");
-                oldflgval->setName(chkRes->getName() + ".oldval");
+                chkRes = CmpInst::Create(Instruction::ICmp,
+                                         CmpInst::ICMP_NE,
+                                         orig, modified,
+                                         "chk", next);
 
                 CheckingInstrs.insert(orig);
                 CheckingInstrs.insert(modified);
-                CheckingInstrs.insert(cmp);
-                CheckingInstrs.insert(oldflgval);
                 CheckingInstrs.insert(chkRes);
+
+                // set consitant name
+                orig->setName(chkRes->getName() + ".orig");
+                modified->setName(chkRes->getName() + ".mod");
 
                 StoreToCheckMap[SI].push_back({memAddr, chkRes});
             }
+
 
             // if we have stored the check result to the flag
             Check pair = {memAddr, chkRes};
@@ -109,7 +100,21 @@ void RedoBBBuilder::insertCheck(Value *val, Value *memAddr, Value* flag)
             }
 
             DEBUG(dbgs() << "Store check result to " << flag->getName() << "\n");
-            StoreInst *st = new StoreInst(chkRes, flag, chkRes->getNextNode());
+            // merge old value and new value with or
+            //
+            // %oldflgval   = load %flag
+            // %newflgval   = or %oldflgval, %chkRes
+            // store  %newflgval, %flag
+            // the next instr after STORE we checking
+            Instruction *next = chkRes->getNextNode();
+            LoadInst *oldflgval = new LoadInst(flag, flag->getName() + ".oldval", next);
+            auto *newflgval = BinaryOperator::Create(Instruction::Or,
+                                                     oldflgval, chkRes,
+                                                     flag->getName() + ".newval",
+                                                     next);
+            StoreInst *st = new StoreInst(newflgval, flag, next);
+            CheckingInstrs.insert(oldflgval);
+            CheckingInstrs.insert(newflgval);
             CheckingInstrs.insert(st);
 
             CheckToFlagMap[pair].push_back(flag);
