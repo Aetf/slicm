@@ -8,12 +8,10 @@ using namespace ucw;
 /// returns the created flag address value
 Value *RedoBBBuilder::createCheckFlag(LoadInst &LD)
 {
-    DEBUG(dbgs() << "Creating check flag for :" << LD << "\n");
-
     // reuse flag for the same memory address
     Value *flag = LdToFlagMap[&LD];
     if (flag) {
-        DEBUG(dbgs() << "    reuse existing flag.\n");
+        DEBUG(dbgs() << "    Reuse existing flag.\n");
     } else {
         // create flag variable
         BasicBlock *prepre = pass->getOrCreatePrePreheader();
@@ -27,6 +25,8 @@ Value *RedoBBBuilder::createCheckFlag(LoadInst &LD)
 
         LdToFlagMap[&LD] = flag;
     }
+
+    DEBUG(dbgs() << "        Created check flag '" << flag->getName() << "' for (" << LD << "  )\n");
 
     // insert check to potential stores
     // insert check to all potential alias address users
@@ -53,14 +53,14 @@ void RedoBBBuilder::insertCheck(Value *val, Value *memAddr, Value* flag)
             if (StoreToCheckMap.count(SI)) {
                 for (auto pair : StoreToCheckMap[SI]) {
                     if (pair.first == memAddr) {
-                        DEBUG(dbgs() << "Found existing check for (" << *SI << "  ) in "
+                        DEBUG(dbgs() << "        Found existing check for (" << *SI << "  ) in "
                                     << SI->getParent()->getName() << "\n");
                         chkRes = pair.second;
                     }
                 }
             }
             if (!chkRes) {
-                DEBUG(dbgs() << "Inserting check for (" << *SI << "  ) in "
+                DEBUG(dbgs() << "        Inserting check for (" << *SI << "  ) in "
                             << SI->getParent()->getName() << "\n");
 
                 // check if before and after the store, the memore address changed
@@ -94,12 +94,12 @@ void RedoBBBuilder::insertCheck(Value *val, Value *memAddr, Value* flag)
             Check pair = {memAddr, chkRes};
             for (auto f : CheckToFlagMap[pair]) {
                 if (f == flag) {
-                    DEBUG(dbgs() << "Existing flag store found\n");
+                    DEBUG(dbgs() << "        Existing flag store found\n");
                     return;
                 }
             }
 
-            DEBUG(dbgs() << "Store check result to " << flag->getName() << "\n");
+            DEBUG(dbgs() << "            Check result stored to " << flag->getName() << "\n");
             // merge old value and new value with or
             //
             // %oldflgval   = load %flag
@@ -164,6 +164,9 @@ void RedoBBBuilder::AddToRedoBB(Instruction *Inst, LoadInst *LD)
     BasicBlock *redoBB = LdToRedoBB[LD];
     assert(redoBB && "Create redoBB first!");
 
+    DEBUG(dbgs() << "        Adding '" << Inst->getName() << "' to redoBB '" << redoBB->getName()
+                << "', belongs to '" << LD->getName() << "'\n");
+
     auto newInst = Inst->clone();
     if (!Inst->getName().empty()) {
         newInst->setName(Inst->getName() + ".redo");
@@ -179,18 +182,17 @@ void RedoBBBuilder::AddToRedoBB(Instruction *Inst, LoadInst *LD)
     newInst->insertBefore(end);
     new StoreInst(newInst, var, end);
 
-    DEBUG(dbgs() << "Cloned (" << *Inst << ") as (" << *newInst << ") to redoBB\n");
+    DEBUG(dbgs() << "            Added as (" << *newInst << "  )\n");
 }
 
 /// Create a stack value to store `Inst`'s output
 Value *RedoBBBuilder::createStackValue(Instruction *Inst)
 {
     if (Value *var = InstToStvarMap[Inst]) {
-        DEBUG(dbgs() << "Reuse existing stack value");
+        DEBUG(dbgs() << "            Reuse existing stack value '" << var->getName() << "'\n");
         return var;
     }
 
-    DEBUG(dbgs() << "Creating stack value for (" << *Inst << ")\n");
     BasicBlock *prepre = pass->getOrCreatePrePreheader();
     BasicBlock *postpre = pass->getOrCreatePostPreheader();
 
@@ -199,6 +201,9 @@ Value *RedoBBBuilder::createStackValue(Instruction *Inst)
                                         prepre->getTerminator());
     new StoreInst(Inst, var, postpre->getTerminator());
     InstToStvarMap[Inst] = var;
+
+    DEBUG(dbgs() << "            Created stack value '" << var->getName() << "' for (" << *Inst << "  )\n");
+
     return var;
 }
 
@@ -213,13 +218,16 @@ void RedoBBBuilder::PatchOutputs()
 /// Change all consumers of `I` to use stack variable `var` instead
 void RedoBBBuilder::patchOutputFor(Instruction *I, Value *var)
 {
-    DEBUG(dbgs() << "Patching instructions' output\n");
+    DEBUG(dbgs() << "Patching comsumer of (" << *I << "  )\n");
     for (auto it = I->use_begin(), ite = I->use_end(); it != ite; it++) {
         if (Instruction *userInst = dyn_cast<Instruction>(*it)) {
             if (userInst->getParent() == pass->Preheader
                 || userInst->getParent() == pass->getOrCreatePostPreheader()) {
                 continue;
             }
+            DEBUG(dbgs() << "    Change (" << *userInst << "  ) to use stack variable '"
+                        << var->getName() <<"'\n");
+
             LoadInst *ld = new LoadInst(var, "", userInst);
             userInst->replaceUsesOfWith(I, ld);
 

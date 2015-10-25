@@ -282,8 +282,6 @@ void SLICM::HoistRegion(DomTreeNode *N)
     assert(N != 0 && "Null dominator tree node?");
     BasicBlock *BB = N->getBlock();
 
-    DEBUG(dbgs() << "HoistRegion trying running on block: " << BB->getName() << "\n");
-
     // If this subregion is not in the top level loop at all, exit.
     if (!CurLoop->contains(BB)) { return; }
 
@@ -296,7 +294,7 @@ void SLICM::HoistRegion(DomTreeNode *N)
         return;
     }
 
-    DEBUG(dbgs() << "HoistRegion running on block: " << BB->getName() << "\n");
+    DEBUG(dbgs() << "SLICM HoistRegion running on block: " << BB->getName() << "\n");
 
     // Only need to process the contents of this block if it is not part of a
     // subloop (which would already have been processed).
@@ -359,19 +357,26 @@ bool SLICM::hasLoopInvariantOperands(Instruction &I)
 
 void SLICM::maybeResultOfSpeculativeHoist(Instruction &I)
 {
-    SmallVector<LoadInst*, 2> local;
+    bool first = true;
+
+    SmallVector<LoadInst*, 2> depends;
     for (unsigned i = 0, e = I.getNumOperands(); i != e; i++) {
         if (Instruction *operInst = dyn_cast<Instruction>(I.getOperand(i))) {
             if (SpeculateHoisted.count(operInst)) {
+                if (first) {
+                    first = false;
+                    DEBUG(dbgs() << "    (" << I << "  ) may be result of speculative hoist\n");
+                }
+                DEBUG(dbgs() << "    Operand '" << operInst->getName() << "' depends on speculative hoisted load\n");
                 for (auto ld : SpeculateHoisted[operInst]) {
                     RBBB->AddToRedoBB(&I, ld);
-                    local.push_back(ld);
+                    depends.push_back(ld);
                 }
             }
         }
     }
-    if (!local.empty()) {
-        SpeculateHoisted[&I].swap(local);
+    if (!depends.empty()) {
+        SpeculateHoisted[&I].swap(depends);
     }
 }
 
@@ -414,7 +419,8 @@ bool SLICM::canSinkOrHoistInst(Instruction& I, bool *speculative)
         // If the caller is aware of it,
         // we can hoist loads with some fixup code
         if (speculative && canSpeculativeHoist(*LI)) {
-            DEBUG(dbgs() << "Found speculative hoistable instruction: " << I << "\n");
+            I.setName("ld");
+            DEBUG(dbgs() << "    Found speculative hoistable instruction (" << I << "  )\n");
             *speculative = true;
             return true;
         }
@@ -656,8 +662,6 @@ BasicBlock *SLICM::getOrCreatePrePreheader()
     if (PrePreheader) return PrePreheader;
     if (!Preheader) return 0;
 
-    DEBUG(dbgs() << "Creating pre-preheader on preheader: " << Preheader->getName() << "\n");
-
     PrePreheader = Preheader;
     Instruction *first = &(Preheader->getInstList().front());
     Preheader = SplitBlock(Preheader, first, this);
@@ -682,8 +686,8 @@ BasicBlock* SLICM::getOrCreatePostPreheader()
 ///
 void SLICM::speculativeHoist(Instruction &I)
 {
-    DEBUG(dbgs() << "SLICM begin speculative hoisting to " << Preheader->getName() << ": "
-                << I << "\n");
+    DEBUG(dbgs() << "    SLICM begin speculative hoisting (" << I
+                << "  ) to preheader: " << Preheader->getName() << "\n");
 
     LoadInst *LD = cast<LoadInst>(&I);
     SmallVector<LoadInst *, 2> vec;
