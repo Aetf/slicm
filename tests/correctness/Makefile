@@ -5,7 +5,7 @@ PASSLIB = $(THIS_DIR)$(LEVEL)/build/Debug+Asserts/lib/slicm.so
 RESULTDIR = $(THIS_DIR)results
 OUTPUTDIR = $(THIS_DIR)output
 
-CASES = case1 case2 case3 case4
+CASES = case1 case2 case3 case4 case5
 
 # Tools we use
 LLVMHOME = /opt/llvm33
@@ -25,6 +25,9 @@ case3 : correct3 correct3.slicm
 	./check.sh $< $(OUTPUTDIR)
 
 case4 : correct4 correct4.slicm
+	./check.sh $< $(OUTPUTDIR)
+
+case5 : correct5 correct5.slicm
 	./check.sh $< $(OUTPUTDIR)
 
 cfg1 : correct1.bc
@@ -67,6 +70,16 @@ slicmcfg4 : correct4.slicm.bc
 	@sleep 1s
 	@rm $($@_TMP)
 
+cfg5 : correct5.bc
+	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
+	@sleep 1s
+	@rm $($@_TMP)
+
+slicmcfg5 : correct5.slicm.bc
+	$(eval $@_TMP := $(shell opt -view-cfg $< 2>&1 >/dev/null | sed -rn 's#^.*erase graph file: (/tmp/cfg.*-[0-9a-zA-Z]+\.dot)$$$$#\1#p'))
+	@sleep 1s
+	@rm $($@_TMP)
+
 slicm1 : correct1.slicm.bc
 
 slicm2 : correct2.slicm.bc
@@ -75,12 +88,14 @@ slicm3 : correct3.slicm.bc
 
 slicm4 : correct4.slicm.bc
 
+slicm5 : correct5.slicm.bc
+
 clean :
 	rm -f *.bc *.ll
-	rm -f correct{1,2,3,4}
-	rm -f correct{1,2,3,4}.slicm
+	rm -f correct{1,2,3,4,5}
+	rm -f correct{1,2,3,4,5}.slicm
 
-.PHONY : all clean $(CASES) cfg1 cfg2 cfg3 cfg4 slicmcfg1 slicmcfg2 slicmcfg3 slicmcfg4
+.PHONY : all clean $(CASES) cfg1 cfg2 cfg3 cfg4 cfg5 slicmcfg1 slicmcfg2 slicmcfg3 slicmcfg4 slicmcfg5
 
 %.ll : %.bc
 	$(llvm-dis) -o $@ $<
