@@ -220,22 +220,26 @@ void RedoBBBuilder::PatchOutputs()
 /// Change all consumers of `I` to use stack variable `var` instead
 void RedoBBBuilder::patchOutputFor(Instruction *I, Value *var)
 {
-    DEBUG(dbgs() << "Patching comsumer of (" << *I << "  )\n");
+    // must build the list first, because we are changing it
+    SmallVector<Instruction*, 8> usages;
     for (auto it = I->use_begin(), ite = I->use_end(); it != ite; it++) {
         if (Instruction *userInst = dyn_cast<Instruction>(*it)) {
             if (userInst->getParent() == pass->Preheader
                 || userInst->getParent() == pass->getOrCreatePostPreheader()) {
                 continue;
             }
-            DEBUG(dbgs() << "    Change (" << *userInst << "  ) to use stack variable '"
-                        << var->getName() <<"'\n");
-
-            LoadInst *ld = new LoadInst(var, "", userInst);
-            userInst->replaceUsesOfWith(I, ld);
-
-            // Mark ld as unable for hoist
-            CheckingInstrs.insert(ld);
+            usages.push_back(userInst);
         }
+    }
+    for (auto userInst : usages) {
+        DEBUG(dbgs() << "    Change (" << *userInst << "  ) to use stack variable '"
+                    << var->getName() <<"'\n");
+
+        LoadInst *ld = new LoadInst(var, "", userInst);
+        userInst->replaceUsesOfWith(I, ld);
+
+        // Mark ld as unable for hoist
+        CheckingInstrs.insert(ld);
     }
 }
 
