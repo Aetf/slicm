@@ -3,6 +3,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/Debug.h"
@@ -29,7 +30,7 @@ class RedoBBBuilder
     DenseMap<Value *, Value *> MemAddrToFlagMap;
     DenseMap<Instruction *, Value *> InstToStvarMap;
     DenseMap<LoadInst*, BasicBlock *> LdToRedoBB;
-    DenseMap<StoreInst *, Value *> StoreCheckedByFlagMap;
+    DenseMap<StoreInst *, SmallVector<Value *, 2>> StoreCheckedByFlagMap;
     DenseSet<Instruction *> CheckingInstrs;
 
 public:

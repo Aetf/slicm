@@ -53,7 +53,13 @@ void RedoBBBuilder::insertCheck(Value *memAddr, Value* val)
             if (!shouldCheck(*SI)) { continue; }
 
             // skip those we have checked
-            if (flag == StoreCheckedByFlagMap[SI]) { continue; }
+            if (StoreCheckedByFlagMap.count(SI)) {
+                bool skip = false;
+                for (auto f : StoreCheckedByFlagMap[SI]) {
+                    if (flag == f) skip = true;
+                }
+                if (skip) continue;
+            }
 
             DEBUG(dbgs() << "Inserting check for (" << *SI << "  ) in "
                         << SI->getParent()->getName() << "\n");
@@ -67,20 +73,20 @@ void RedoBBBuilder::insertCheck(Value *memAddr, Value* val)
             // %newflgval   = or %oldflgval, %cmp
             // store  %newflgval, %flag
             // next instr after STORE we checking
-            LoadInst *orig = new LoadInst(memAddr, "", SI);
+            LoadInst *orig = new LoadInst(memAddr, "orig.chk", SI);
 
             Instruction *next = SI->getNextNode();
-            LoadInst *modified = new LoadInst(memAddr, "", next);
+            LoadInst *modified = new LoadInst(memAddr, "mod.chk", next);
             CmpInst *cmp = CmpInst::Create(Instruction::ICmp,
                                            CmpInst::ICMP_NE,
                                            orig, modified,
-                                           "", next);
+                                           "chk", next);
             LoadInst *oldflgval = new LoadInst(flag, "", next);
             BinaryOperator *newflgval = BinaryOperator::Create(Instruction::Or,
                                                                oldflgval, cmp,
                                                                "", next);
             StoreInst *st = new StoreInst(newflgval, flag, next);
-            StoreCheckedByFlagMap[SI] = flag;
+            StoreCheckedByFlagMap[SI].push_back(flag);
 
             CheckingInstrs.insert(orig);
             CheckingInstrs.insert(modified);
@@ -121,6 +127,9 @@ BasicBlock *RedoBBBuilder::CreateRedoBB(LoadInst &I)
     // reset flag in redoBB
     new StoreInst(ConstantInt::getFalse(I.getContext()),
                   flag, redoBB->getTerminator());
+
+    // add load itself to redoBB
+    AddToRedoBB(&I, &I);
 
     return redoBB;
 }
