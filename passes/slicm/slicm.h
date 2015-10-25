@@ -70,7 +70,7 @@ private:
                              // may throw, thus preventing code motion of
                              // instructions with side effects.
     DenseMap<Loop *, AliasSetTracker *> LoopToAliasSetMap;
-    DenseSet<LoadInst *> SpeculateHoistedLd;
+    DenseMap<Instruction *, SmallVector<LoadInst*, 2>> SpeculateHoisted;
 
     // Helper class for speculative hoist
     RedoBBBuilder *RBBB;

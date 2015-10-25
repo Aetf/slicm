@@ -106,7 +106,7 @@ void SLICM::ClearState()
     PrePreheader = 0;
     PostPreheader = 0;
 
-    SpeculateHoistedLd.clear();
+    SpeculateHoisted.clear();
     delete RBBB;
     RBBB = 0;
 }
@@ -359,12 +359,19 @@ bool SLICM::hasLoopInvariantOperands(Instruction &I)
 
 void SLICM::maybeResultOfSpeculativeHoist(Instruction &I)
 {
+    SmallVector<LoadInst*, 2> local;
     for (unsigned i = 0, e = I.getNumOperands(); i != e; i++) {
-        if (LoadInst *ld = dyn_cast<LoadInst>(I.getOperand(i))) {
-            if (SpeculateHoistedLd.count(ld) > 0) {
-                RBBB->AddToRedoBB(&I, ld);
+        if (Instruction *operInst = dyn_cast<Instruction>(I.getOperand(i))) {
+            if (SpeculateHoisted.count(operInst)) {
+                for (auto ld : SpeculateHoisted[operInst]) {
+                    RBBB->AddToRedoBB(&I, ld);
+                    local.push_back(ld);
+                }
             }
         }
+    }
+    if (!local.empty()) {
+        SpeculateHoisted[&I].swap(local);
     }
 }
 
@@ -679,7 +686,9 @@ void SLICM::speculativeHoist(Instruction &I)
                 << I << "\n");
 
     LoadInst *LD = cast<LoadInst>(&I);
-    SpeculateHoistedLd.insert(LD);
+    SmallVector<LoadInst *, 2> vec;
+    vec.push_back(LD);
+    SpeculateHoisted[LD] = vec;
     RBBB->CreateRedoBB(*LD);
 
     // hoist I to preheader
