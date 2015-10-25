@@ -53,16 +53,14 @@ void RedoBBBuilder::insertCheck(Value *val, Value *memAddr, Value* flag)
             if (StoreToCheckMap.count(SI)) {
                 for (auto pair : StoreToCheckMap[SI]) {
                     if (pair.first == memAddr) {
-                        DEBUG(dbgs() << "        Found existing check for (" << *SI << "  ) in "
-                                    << SI->getParent()->getName() << "\n");
                         chkRes = pair.second;
+                        DEBUG(dbgs() << "        Found existing check '" << chkRes->getName()
+                                    << "' for (" << *SI << "  ) in "
+                                    << SI->getParent()->getName() << "\n");
                     }
                 }
             }
             if (!chkRes) {
-                DEBUG(dbgs() << "        Inserting check for (" << *SI << "  ) in "
-                            << SI->getParent()->getName() << "\n");
-
                 // check if before and after the store, the memore address changed
                 //
                 // %orig        = load %memAddr
@@ -87,6 +85,10 @@ void RedoBBBuilder::insertCheck(Value *val, Value *memAddr, Value* flag)
                 modified->setName(chkRes->getName() + ".mod");
 
                 StoreToCheckMap[SI].push_back({memAddr, chkRes});
+
+                DEBUG(dbgs() << "        Inserted check '" << chkRes->getName()
+                            << "' for (" << *SI << "  ) in "
+                            << SI->getParent()->getName() << "\n");
             }
 
 
