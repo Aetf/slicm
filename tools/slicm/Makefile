@@ -13,6 +13,12 @@ TOOLNAME=Slicm
 # We use LIBS because sample is a dynamic library.
 #
 #USEDLIBS = slicm
+LINK_COMPONENTS = support
+
+#
+# Build use c++11 standard
+#
+CPPFLAGS += -std=c++11
 
 #
 # Include Makefile.common so we know what to do.
