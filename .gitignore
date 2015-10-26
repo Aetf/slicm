@@ -23,6 +23,14 @@ tests/correctness/correct2.slicm
 tests/correctness/correct3.slicm
 tests/correctness/correct4.slicm
 tests/correctness/correct5.slicm
+tests/performance/perf1
+tests/performance/perf2
+tests/performance/perf3
+tests/performance/wc
+tests/performance/perf1.slicm
+tests/performance/perf2.slicm
+tests/performance/perf3.slicm
+tests/performance/wc.slicm
 
 # submission dir
 submission/*/src/*
