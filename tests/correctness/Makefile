@@ -24,19 +24,19 @@ llvm-dis = $(LLVMHOME)/bin/llvm-dis
 
 all : $(CASES)
 
-case1 : correct1 correct1.slicm
+case1 : correct1 correct1.slicm correct1.intelligent-slicm.bc
 	./check.sh $< $(OUTPUTDIR)
 
-case2 : correct2 correct2.slicm
+case2 : correct2 correct2.slicm correct2.intelligent-slicm.bc
 	./check.sh $< $(OUTPUTDIR)
 
-case3 : correct3 correct3.slicm
+case3 : correct3 correct3.slicm correct3.intelligent-slicm.bc
 	./check.sh $< $(OUTPUTDIR)
 
-case4 : correct4 correct4.slicm
+case4 : correct4 correct4.slicm correct4.intelligent-slicm.bc
 	./check.sh $< $(OUTPUTDIR)
 
-case5 : correct5 correct5.slicm
+case5 : correct5 correct5.slicm correct5.intelligent-slicm.bc
 	./check.sh $< $(OUTPUTDIR)
 
 cfg1 : correct1.bc
@@ -114,6 +114,9 @@ clean :
 
 %.slicm.bc : %.bc
 	$(opt) $(DEBUG_FLAG) -load $(PASSLIB) -slicm -o $@ $<
+
+%.intelligent-slicm.bc : %.slicm.bc
+	cp $< $@
 
 correct% : correct%.bc
 	$(clang) -o $@ $<
