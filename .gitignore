@@ -35,3 +35,4 @@ tests/performance/wc.slicm
 # submission dir
 submission/*/src/*
 submission/*/results/*
+submission/*.tgz
