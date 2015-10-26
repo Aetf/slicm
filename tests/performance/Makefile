@@ -23,16 +23,16 @@ llvm-dis = $(LLVMHOME)/bin/llvm-dis
 
 all : $(CASES)
 
-case1 : perf1 perf1.slicm
+case1 : perf1 perf1.slicm perf1.intelligent-slicm.bc
 	./check.sh $< $(OUTPUTDIR)
 
-case2 : perf2 perf2.slicm
+case2 : perf2 perf2.slicm perf2.intelligent-slicm.bc
 	./check.sh $< $(OUTPUTDIR)
 
-case3 : perf3 perf3.slicm
+case3 : perf3 perf3.slicm perf3.intelligent-slicm.bc
 	./check.sh $< $(OUTPUTDIR)
 
-casewc : wc wc.slicm
+casewc : wc wc.slicm 583wc.intelligent-slicm.bc
 	./check.sh $< $(OUTPUTDIR) input/cccp.c
 
 cfg1 : perf1.bc
@@ -99,14 +99,17 @@ clean :
 %.slicm.bc : %.bc
 	$(opt) $(DEBUG_FLAG) -load $(PASSLIB) -slicm -o $@ $<
 
+%.intelligent-slicm.bc : %.slicm.bc
+	cp $< $@
+
 perf% : perf%.bc
 	$(clang) -o $@ $<
 
-wc : wc.bc
+wc : 583wc.bc
 	$(clang) -o $@ $<
 
 perf%.slicm : perf%.slicm.bc
 	$(clang) -o $@ $<
 
-wc.slicm : wc.slicm.bc
+wc.slicm : 583wc.slicm.bc
 	$(clang) -o $@ $<
