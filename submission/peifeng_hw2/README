@@ -1,0 +1,42 @@
+#Homework2
+
+##Part1: Correctness
+
+__Status__: DONE
+
+###Description
+Fully integrated with the original LICM code, the speculative hoisting is performed when `canSpeculativeHoist` returns true. Following code shows the general procedure. Multi-dependency is handled by attaching each hoisted instruction a dependency list, and the list is passed from a instruction's operands to itself. Later this list is used to filling the redo BB for each `load` instruction hoisted.
+
+```
+run HoistRegion on each BB in loop in dfo w.r.t. the DominatorTree
+    for all instruction in the BB
+        if canHoist
+            if is result of a speculatively hoisted instr
+                for all operands of the instr
+                    for all `load` instr in the operand's dependency list
+                        add the instr to the `load` instr's redo BB
+                        add the `load` to the instr's dependency list
+            if isSpeculativeHoist
+                add the instr to itself's dependency list
+                setup home/rest/redo BB structure
+                create flag on stack for the `load` instr
+                insert check around all `store` instr in loop which may modify the src of the `load` instr
+                hoist the `load` instr to preheader
+            else
+                hoist the instr to preheader
+```
+__Features__:
+
+- The preheader for each loop is splited into three parts: pre-preheader, preheader, post-preheader.
+    + pre-preheader: dedicated to contain all `alloca` instructions used to create stack variables.
+    + preheader: contains actual hoisted instructions.
+    + post-preheader: contains all `store` instructions which save hoisted instructions' output to corresponding stack variables.
+- The check code is reused if the `store` instruction __and__ the memory address to check is the same. But the flag is separate for each `load` instruction.
+    + A single `store` instruction can have multiple checks
+    + A single check can store its result into multiple flag stack variables.
+- Improved check code to handle the edge case when the memory address we want to check has different type with the `store` instruction we are checking
+    + consider loading 4 bytes from memory address starting at `1000`, and storing 8 bytes to memory address starting at `998`. This situation cannot be detected if just compare the dest operand of `store` and src operand of `load`.
+
+##Part2: Performance
+
+__Status__: STILL WORKING

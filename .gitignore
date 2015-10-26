@@ -23,3 +23,7 @@ tests/correctness/correct2.slicm
 tests/correctness/correct3.slicm
 tests/correctness/correct4.slicm
 tests/correctness/correct5.slicm
+
+# submission dir
+submission/*/src/*
+submission/*/results/*
