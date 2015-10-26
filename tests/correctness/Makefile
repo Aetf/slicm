@@ -1,6 +1,15 @@
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 LEVEL := "../.."
-PASSLIB = $(THIS_DIR)$(LEVEL)/build/Debug+Asserts/lib/slicm.so
+RELPASSLIB = $(LEVEL)/build/Debug+Asserts/lib/slicm.so
+PASSLIB = $(THIS_DIR)$(RELPASSLIB)
+
+DEBUG ?= 1
+ifeq ($(DEBUG),1)
+DEBUG_FLAG = -debug -stats
+else
+DEBUG_FLAG =
+endif
+
 
 RESULTDIR = $(THIS_DIR)results
 OUTPUTDIR = $(THIS_DIR)output
@@ -104,7 +113,7 @@ clean :
 	$(clang) -emit-llvm -c -o $@ $<
 
 %.slicm.bc : %.bc
-	$(opt) -debug -stats -load $(PASSLIB) -slicm -o $@ $<
+	$(opt) $(DEBUG_FLAG) -load $(PASSLIB) -slicm -o $@ $<
 
 correct% : correct%.bc
 	$(clang) -o $@ $<
