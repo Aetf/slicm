@@ -690,9 +690,13 @@ void SLICM::speculativeHoist(Instruction &I)
                 << "  ) to preheader: " << Preheader->getName() << "\n");
 
     LoadInst *LD = cast<LoadInst>(&I);
+
+    // Add `LD` to itself dependency list
     SmallVector<LoadInst *, 2> vec;
     vec.push_back(LD);
     SpeculateHoisted[LD] = vec;
+
+    // Create redoBB
     RBBB->CreateRedoBB(*LD);
 
     // hoist I to preheader
